@@ -351,7 +351,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
           </div>
           <button
             className="refresh-btn"
-            onClick={fetchData}
+            onClick={() => fetchData()}
             title="Refresh now"
             disabled={loading}
           >
