@@ -247,7 +247,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
         <div className="error-container">
           <div className="error-icon">!</div>
           <p className="error-message">{error}</p>
-          <button className="retry-btn" onClick={fetchData}>
+          <button className="retry-btn" onClick={() => fetchData()}>
             Try Again
           </button>
         </div>
