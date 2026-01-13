@@ -178,9 +178,9 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
 
   // Export to CSV
   const exportToCSV = () => {
-    const headers = ["Job No", "PO No", "SKU", "Plating", "Batch Qty", "Total Qty", "Size", "Location", "Date Sending"];
+    const headers = ["Job No", "PO No", "SKU", "Plating", "Batch Qty", "Total Qty", "Size", "Location", "Delivery Date"];
     const rows = filteredJobs.map(j => [
-      j.jobNo, j.poNo, j.sku, j.plating, j.batchQty, j.totalQty, j.size, j.normalizedLocation, j.dateSending
+      j.jobNo, j.poNo, j.sku, j.plating, j.batchQty, j.totalQty, j.size, j.normalizedLocation, j.deliveryDate
     ]);
 
     const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
@@ -624,7 +624,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                     { key: "totalQty", label: "Total Qty" },
                     { key: "size", label: "Size" },
                     { key: "normalizedLocation", label: "Location" },
-                    { key: "dateSending", label: "Date Sending" },
+                    { key: "deliveryDate", label: "Delivery Date" },
                   ].map(({ key, label }) => (
                     <th
                       key={key}
@@ -662,7 +662,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                         {job.normalizedLocation}
                       </span>
                     </td>
-                    <td>{job.dateSending || "—"}</td>
+                    <td>{job.deliveryDate || "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -722,6 +722,10 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                       {selectedJob.normalizedLocation}
                     </span>
                   </span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Delivery Date</span>
+                  <span className="detail-value">{selectedJob.deliveryDate || "—"}</span>
                 </div>
                 {selectedJob.notesPre && (
                   <div className="detail-item full-width">

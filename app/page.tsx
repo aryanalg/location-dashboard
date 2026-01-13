@@ -46,6 +46,32 @@ export default function Home() {
     );
   }
 
+  // Session has error (e.g., token refresh failed) - force re-authentication
+  if (session.error) {
+    return (
+      <div className="signin-container">
+        <div className="signin-card">
+          <div className="signin-logo">
+            <h1>Location Dashboard</h1>
+            <p>Session Expired</p>
+          </div>
+          <p className="text-gray-600 mb-4 text-center">
+            Your session has expired. Please sign in again to continue.
+          </p>
+          <button
+            className="signin-btn"
+            onClick={() => signIn("azure-ad")}
+          >
+            <svg width="20" height="20" viewBox="0 0 21 21" fill="currentColor">
+              <path d="M0 0h10v10H0V0zm11 0h10v10H11V0zM0 11h10v10H0V11zm11 0h10v10H11V11z"/>
+            </svg>
+            Sign in with Microsoft
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // Authenticated - show dashboard
   return <Dashboard user={session.user} onSignOut={() => signOut()} />;
 }

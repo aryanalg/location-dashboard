@@ -20,6 +20,7 @@ const COLUMN_MAP: Record<string, keyof Job> = {
   'Total Qty': 'totalQty',
   'Size': 'size',
   'Location': 'location',
+  'Delivery Date': 'deliveryDate',
   'Notes ( Pre Production Gan )': 'notesPre',
   'Notes (  Production New)': 'notesNew',
   'Date Sending': 'dateSending',
@@ -75,6 +76,43 @@ function formatDate(value: any): string {
   return '';
 }
 
+// Format date as dd/mm/yyyy (e.g., 6/2/2026 for 6th February 2026)
+function formatDateDMY(value: any): string {
+  if (value === null || value === undefined || value === '') return '';
+
+  // Excel dates might come as serial numbers
+  if (typeof value === 'number') {
+    const date = new Date((value - 25569) * 86400 * 1000);
+    const day = date.getUTCDate();
+    const month = date.getUTCMonth() + 1;
+    const year = date.getUTCFullYear();
+    return `${day}/${month}/${year}`;
+  }
+
+  // Handle string values
+  const str = String(value).trim();
+  if (str === 'NaT' || str === 'nan' || str === '') return '';
+
+  // Check for yyyy-mm-dd format (ISO format) - convert to dd/mm/yyyy
+  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1]);
+    const month = parseInt(isoMatch[2]);
+    const day = parseInt(isoMatch[3]);
+    return `${day}/${month}/${year}`;
+  }
+
+  // Graph API returns dates in the same format as Excel displays them
+  // For DD/MM/YYYY formatted cells, the string is already correct - return as-is
+  const dateMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (dateMatch) {
+    // Already in DD/MM/YYYY format, return as-is
+    return str;
+  }
+
+  return str;
+}
+
 // Check if a sheet name looks like a PO sheet
 function isPOSheet(sheetName: string): boolean {
   // Known PO patterns
@@ -106,6 +144,11 @@ function parseWorksheetData(
       colIndex[COLUMN_MAP[headerStr]] = idx;
     }
   });
+
+  // Debug: log if deliveryDate column was found (once per sheet)
+  if (!colIndex['deliveryDate']) {
+    console.log(`Sheet ${sheetName}: deliveryDate column NOT found. Headers: ${headers.slice(0, 15).map((h: any) => safeString(h)).join(', ')}`);
+  }
 
   // Process data rows
   for (let i = 1; i < values.length; i++) {
@@ -139,6 +182,7 @@ function parseWorksheetData(
       size: safeString(row[colIndex['size']]),
       location,
       normalizedLocation: normalizeLocation(location),
+      deliveryDate: formatDateDMY(row[colIndex['deliveryDate']]),
       notesPre: safeString(row[colIndex['notesPre']]),
       notesNew: safeString(row[colIndex['notesNew']]),
       dateSending: formatDate(row[colIndex['dateSending']]),
@@ -190,7 +234,10 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
     // Get file info using direct path
     const itemPath = `/sites/${siteId}/drives/${targetDrive.id}/root:${filePath}`;
     const fileInfo = await client.api(itemPath).get();
-    console.log(`Reading: ${fileInfo.name} (modified: ${fileInfo.lastModifiedDateTime})`);
+    // Debug log only in development
+    if (process.env.NODE_ENV === "development") {
+      console.log(`Reading: ${fileInfo.name} (modified: ${fileInfo.lastModifiedDateTime})`);
+    }
 
     // Use the file's ID to access the workbook API (more reliable)
     const workbookPath = `/sites/${siteId}/drives/${targetDrive.id}/items/${fileInfo.id}/workbook`;
@@ -239,7 +286,10 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
         allJobs.push(...jobs);
 
       } catch (sheetError) {
-        console.error(`Error reading sheet ${sheetName}:`, sheetError);
+        // Log sheet errors in development only
+        if (process.env.NODE_ENV === "development") {
+          console.error(`Error reading sheet ${sheetName}:`, sheetError);
+        }
         // Continue with other sheets
       }
     }
@@ -256,7 +306,10 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
     return allJobs;
 
   } catch (error) {
-    console.error('Error fetching Excel data:', error);
+    // Log in development only - production errors are logged at API level
+    if (process.env.NODE_ENV === "development") {
+      console.error('Error fetching Excel data:', error);
+    }
     throw error;
   }
 }
