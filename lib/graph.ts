@@ -80,13 +80,17 @@ function formatDate(value: any): string {
 function formatDateDMY(value: any): string {
   if (value === null || value === undefined || value === '') return '';
 
-  // Excel dates might come as serial numbers
+  // Excel dates come as serial numbers when stored as actual Date values
+  // The Excel file has US locale (MM/DD/YYYY), but users entered dates in DD/MM/YYYY format
+  // Excel mis-interpreted "6/2/2026" (Feb 6) as June 2nd and stored serial 46175
+  // We need to swap day/month to recover the user's original DD/MM/YYYY intent
   if (typeof value === 'number') {
     const date = new Date((value - 25569) * 86400 * 1000);
-    const day = date.getUTCDate();
-    const month = date.getUTCMonth() + 1;
+    const storedDay = date.getUTCDate();
+    const storedMonth = date.getUTCMonth() + 1;
     const year = date.getUTCFullYear();
-    return `${day}/${month}/${year}`;
+    // Swap: Excel stored month as day and day as month due to locale mismatch
+    return `${storedMonth}/${storedDay}/${year}`;
   }
 
   // Handle string values

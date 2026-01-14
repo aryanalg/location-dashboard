@@ -113,3 +113,60 @@ export function normalizeLocation(rawLocation: string | null | undefined): strin
 
   return 'Other';
 }
+
+// Display mode for Jobs vs Pieces view
+export type DisplayMode = 'jobs' | 'pieces';
+
+// Urgency buckets based on delivery deadline
+export type AgeBucket = 'overdue' | 'urgent' | 'soon' | 'normal';
+
+// Calculate days until delivery date
+// Returns negative number if overdue
+export function getDaysUntilDelivery(deliveryDate: string): number {
+  if (!deliveryDate) return Infinity; // No date = treat as not urgent
+
+  // Parse DD/MM/YYYY format
+  const parts = deliveryDate.split('/');
+  if (parts.length !== 3) return Infinity;
+
+  const day = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1; // JS months are 0-indexed
+  const year = parseInt(parts[2], 10);
+
+  if (isNaN(day) || isNaN(month) || isNaN(year)) return Infinity;
+
+  const deliveryDateObj = new Date(year, month, day);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0); // Reset time to start of day
+
+  const diffTime = deliveryDateObj.getTime() - today.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+  return diffDays;
+}
+
+// Get urgency bucket based on days until delivery
+export function getAgeBucket(daysUntil: number): AgeBucket {
+  if (daysUntil < 0) return 'overdue';
+  if (daysUntil <= 7) return 'urgent';
+  if (daysUntil <= 14) return 'soon';
+  return 'normal';
+}
+
+// Get urgency color for styling
+export function getUrgencyColor(bucket: AgeBucket): string {
+  switch (bucket) {
+    case 'overdue': return '#991b1b'; // Dark red
+    case 'urgent': return '#ea580c';  // Orange
+    case 'soon': return '#ca8a04';    // Yellow
+    case 'normal': return '#16a34a';  // Green
+  }
+}
+
+// Urgency bucket display labels
+export const URGENCY_LABELS: Record<AgeBucket, string> = {
+  'overdue': 'Overdue',
+  'urgent': 'Urgent (≤7 days)',
+  'soon': 'Soon (8-14 days)',
+  'normal': 'Normal (>14 days)',
+};

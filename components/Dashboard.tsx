@@ -1,18 +1,22 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Job, LOCATION_ORDER, normalizeLocation } from "@/lib/types";
+import {
+  Job,
+  LOCATION_ORDER,
+  DisplayMode,
+  AgeBucket,
+  getDaysUntilDelivery,
+  getAgeBucket,
+} from "@/lib/types";
+import KPICards from "./KPICards";
+import FilterRow from "./FilterRow";
+import AnalyticsPanel from "./AnalyticsPanel";
+import MultiSelect from "./MultiSelect";
 
 interface DashboardProps {
   user: any;
   onSignOut: () => void;
-}
-
-interface Filters {
-  po: string;
-  sku: string;
-  location: string;
-  plating: string;
 }
 
 export default function Dashboard({ user, onSignOut }: DashboardProps) {
@@ -24,19 +28,29 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
 
+  // Global display mode (affects all views)
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("jobs");
+
+  // Multi-select filter state
+  const [selectedPOs, setSelectedPOModals] = useState<string[]>([]);
+  const [selectedSKUs, setSelectedSKUs] = useState<string[]>([]);
+  const [selectedLocations, setSelectedLocations] = useState<string[]>([]);
+  const [selectedUrgencies, setSelectedUrgencies] = useState<AgeBucket[]>([]);
+
+  // Table row selection
+  const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
+
   // UI state
-  const [filters, setFilters] = useState<Filters>({ po: "", sku: "", location: "", plating: "" });
   const [searchQuery, setSearchQuery] = useState("");
   const [sortColumn, setSortColumn] = useState<keyof Job | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
-  const [distributionMode, setDistributionMode] = useState<"jobs" | "pieces">("jobs");
 
   // Modal state
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
-  const [selectedPO, setSelectedPO] = useState<string | null>(null);
-  const [analyticsMode, setAnalyticsMode] = useState<"jobs" | "pieces">("jobs");
+  const [selectedPOModal, setSelectedPOModal] = useState<string | null>(null);
   const [expandedJobs, setExpandedJobs] = useState(false);
+  const [analyticsMode, setAnalyticsMode] = useState<"jobs" | "pieces">("jobs");
 
   // Query assistant state
   const [queryInput, setQueryInput] = useState("");
@@ -85,29 +99,61 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
 
   // Computed values
   const uniquePOs = useMemo(() => [...new Set(jobs.map(j => j.poNo).filter(Boolean))].sort(), [jobs]);
-  const uniquePlatings = useMemo(() => [...new Set(jobs.map(j => j.plating).filter(Boolean))].sort(), [jobs]);
+  const uniqueSKUs = useMemo(() => [...new Set(jobs.map(j => j.sku).filter(Boolean))].sort(), [jobs]);
   const uniqueLocations = useMemo(() =>
     LOCATION_ORDER.filter(loc => jobs.some(j => j.normalizedLocation === loc)),
     [jobs]
   );
 
-  // Filtered and sorted data
+  // Get delivery date for selected POs
+  const selectedPOsDeliveryDate = useMemo(() => {
+    if (selectedPOs.length === 0) return null;
+    const dates = new Set<string>();
+    jobs.forEach(j => {
+      if (selectedPOs.includes(j.poNo) && j.deliveryDate) {
+        dates.add(j.deliveryDate);
+      }
+    });
+    if (dates.size === 0) return null;
+    if (dates.size === 1) return [...dates][0];
+    // Return earliest date
+    const sortedDates = [...dates].sort((a, b) => {
+      const daysA = getDaysUntilDelivery(a);
+      const daysB = getDaysUntilDelivery(b);
+      return daysA - daysB;
+    });
+    return sortedDates[0];
+  }, [jobs, selectedPOs]);
+
+  // Filtered and sorted data (multi-select filters)
   const filteredJobs = useMemo(() => {
     let result = [...jobs];
 
-    // Apply filters
-    if (filters.po) {
-      result = result.filter(j => j.poNo?.toLowerCase().includes(filters.po.toLowerCase()));
+    // PO filter (multi - OR logic)
+    if (selectedPOs.length > 0) {
+      result = result.filter(j => selectedPOs.includes(j.poNo));
     }
-    if (filters.sku) {
-      result = result.filter(j => j.sku?.toLowerCase().includes(filters.sku.toLowerCase()));
+
+    // SKU filter (multi - OR logic)
+    if (selectedSKUs.length > 0) {
+      result = result.filter(j => selectedSKUs.includes(j.sku));
     }
-    if (filters.location) {
-      result = result.filter(j => j.normalizedLocation === filters.location);
+
+    // Location filter (multi - OR logic)
+    if (selectedLocations.length > 0) {
+      result = result.filter(j => selectedLocations.includes(j.normalizedLocation));
     }
-    if (filters.plating) {
-      result = result.filter(j => j.plating === filters.plating);
+
+    // Urgency filter (multi - OR logic)
+    if (selectedUrgencies.length > 0) {
+      result = result.filter(j => {
+        const daysUntil = getDaysUntilDelivery(j.deliveryDate);
+        const bucket = getAgeBucket(daysUntil);
+        return selectedUrgencies.includes(bucket);
+      });
     }
+
+    // Search query
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       result = result.filter(j =>
@@ -136,7 +182,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     }
 
     return result;
-  }, [jobs, filters, searchQuery, sortColumn, sortDirection]);
+  }, [jobs, selectedPOs, selectedSKUs, selectedLocations, selectedUrgencies, searchQuery, sortColumn, sortDirection]);
 
   // Location counts
   const locationCounts = useMemo(() => {
@@ -163,10 +209,31 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     }
   };
 
-  // Clear filters
-  const clearFilters = () => {
-    setFilters({ po: "", sku: "", location: "", plating: "" });
+  // Clear all filters
+  const clearAllFilters = () => {
+    setSelectedPOModals([]);
+    setSelectedSKUs([]);
+    setSelectedLocations([]);
+    setSelectedUrgencies([]);
     setSearchQuery("");
+  };
+
+  // Toggle table row selection
+  const toggleJobSelection = (jobNo: string) => {
+    setSelectedJobIds(prev =>
+      prev.includes(jobNo)
+        ? prev.filter(id => id !== jobNo)
+        : [...prev, jobNo]
+    );
+  };
+
+  // Select/deselect all visible jobs
+  const toggleSelectAll = () => {
+    if (selectedJobIds.length === filteredJobs.length) {
+      setSelectedJobIds([]);
+    } else {
+      setSelectedJobIds(filteredJobs.map(j => j.jobNo));
+    }
   };
 
   // Query assistant
@@ -193,11 +260,11 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     URL.revokeObjectURL(url);
   };
 
-  // PO Analytics
+  // PO Analytics (for modal)
   const poJobs = useMemo(() => {
-    if (!selectedPO) return [];
-    return jobs.filter(j => j.poNo === selectedPO);
-  }, [jobs, selectedPO]);
+    if (!selectedPOModal) return [];
+    return jobs.filter(j => j.poNo === selectedPOModal);
+  }, [jobs, selectedPOModal]);
 
   const poStats = useMemo(() => {
     if (!poJobs.length) return null;
@@ -255,6 +322,9 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     );
   }
 
+  // PO options for multi-select
+  const poOptions = uniquePOs.map(po => ({ value: po, label: `PO ${po}` }));
+
   return (
     <div className="app-container">
       {/* Header */}
@@ -262,101 +332,67 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
         <div className="logo-section">
           <div className="logo-text">
             <h1>Location Dashboard</h1>
-            <span className="subtitle">Job Cart Tracker</span>
+            <span className="subtitle">Production Planning</span>
           </div>
         </div>
-        <div className="header-stats">
-          <div className="stat-pill">
-            <span className="stat-label">Total Jobs</span>
-            <span className="stat-value">{jobs.length}</span>
+
+        <div className="header-controls">
+          {/* Primary PO Filter */}
+          <div className="primary-po-filter">
+            <MultiSelect
+              options={poOptions}
+              selected={selectedPOs}
+              onChange={setSelectedPOModals}
+              placeholder="All POs"
+              label="PO"
+            />
+            {selectedPOs.length > 0 && selectedPOsDeliveryDate && (
+              <div className="delivery-date-display">
+                <span className="delivery-label">Delivery:</span>
+                <span className="delivery-value">{selectedPOsDeliveryDate}</span>
+              </div>
+            )}
           </div>
-          <div className="stat-pill">
-            <span className="stat-label">Active POs</span>
-            <span className="stat-value">{uniquePOs.length}</span>
+
+          {/* Global Jobs/Pieces Toggle */}
+          <div className="display-mode-toggle">
+            <button
+              className={`mode-btn ${displayMode === "jobs" ? "active" : ""}`}
+              onClick={() => setDisplayMode("jobs")}
+            >
+              Jobs
+            </button>
+            <button
+              className={`mode-btn ${displayMode === "pieces" ? "active" : ""}`}
+              onClick={() => setDisplayMode("pieces")}
+            >
+              Pieces
+            </button>
           </div>
-          <div className="stat-pill refresh-info">
-            <span className="stat-label">Last Refresh</span>
-            <span className="stat-value">
+
+          {/* Refresh Controls */}
+          <div className="refresh-controls">
+            <span className="last-refresh">
               {lastRefresh?.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) || "—"}
             </span>
             <button
               className={`refresh-btn ${refreshing ? 'refreshing' : ''}`}
               onClick={() => fetchData(true)}
               disabled={refreshing}
-              title={autoRefreshEnabled ? "Auto-refresh: ON (30s)" : "Auto-refresh: OFF"}
+              title="Refresh now"
             >
               {refreshing ? '↻' : '⟳'}
             </button>
             <button
               className={`auto-refresh-toggle ${autoRefreshEnabled ? 'active' : ''}`}
               onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)}
-              title={autoRefreshEnabled ? "Disable auto-refresh" : "Enable auto-refresh (30s)"}
+              title={autoRefreshEnabled ? "Auto-refresh ON" : "Auto-refresh OFF"}
             >
               {autoRefreshEnabled ? '⏸' : '▶'}
             </button>
           </div>
-          {refreshing && (
-            <div className="refresh-indicator">
-              <span className="refresh-spinner">↻</span> Updating...
-            </div>
-          )}
-          <div className="po-quick-select">
-            <select
-              className="po-select"
-              value=""
-              onChange={(e) => e.target.value && setSelectedPO(e.target.value)}
-            >
-              <option value="">Analyze PO...</option>
-              {uniquePOs.map(po => (
-                <option key={po} value={po}>PO {po}</option>
-              ))}
-            </select>
-          </div>
-          <div className="query-assistant-wrapper">
-            <div className="query-assistant">
-              <input
-                type="text"
-                className="query-input"
-                placeholder="Try: How many jobs at polishing?"
-                value={queryInput}
-                onChange={(e) => setQueryInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && runQuery(queryInput)}
-              />
-              {queryResult && (
-                <div className="query-results">
-                  <div className="query-answer">
-                    <div className="query-answer-main">{queryResult.answer}</div>
-                    <div className="query-answer-detail">{queryResult.detail}</div>
-                    {queryResult.context && (
-                      <div className="query-answer-context">{queryResult.context}</div>
-                    )}
-                  </div>
-                  <button
-                    className="query-action-btn"
-                    style={{ position: "absolute", top: 8, right: 8, width: "auto", flex: "none" }}
-                    onClick={() => setQueryResult(null)}
-                  >
-                    &times;
-                  </button>
-                </div>
-              )}
-            </div>
-            <button
-              className="query-help-btn"
-              onClick={() => setShowQueryHelp(!showQueryHelp)}
-              title="How to ask questions"
-            >
-              ?
-            </button>
-          </div>
-          <button
-            className="refresh-btn"
-            onClick={() => fetchData()}
-            title="Refresh now"
-            disabled={loading}
-          >
-            {loading ? "..." : "↻"}
-          </button>
+
+          {/* User Menu */}
           <div className="user-menu">
             <div className="user-avatar">
               {user?.name?.[0]?.toUpperCase() || "U"}
@@ -368,167 +404,68 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
         </div>
       </header>
 
-      {/* Quick Actions Bar */}
-      <section className="quick-actions-bar">
-        <span className="quick-actions-label">Quick Search:</span>
-        <div className="quick-actions">
-          {[
-            { icon: "💎", text: "Polishing", query: "How many jobs at polishing?" },
-            { icon: "⚡", text: "Electro", query: "How many jobs at electro?" },
-            { icon: "🕯️", text: "Wax", query: "How many jobs at wax?" },
-            { icon: "📦", text: "Packing", query: "How many jobs at packing?" },
-            { icon: "🏆", text: "Busiest", query: "Busiest location" },
-            { icon: "⚠️", text: "Bottleneck", query: "Which PO has bottlenecks?" },
-            { icon: "📊", text: "Rank POs", query: "Rank POs by progress" },
-            { icon: "✅", text: "Almost Done", query: "Which PO is closest to done?" },
-          ].map(({ icon, text, query }) => (
-            <button
-              key={text}
-              className="quick-action-btn"
-              onClick={() => runQuery(query)}
-              title={query}
-            >
-              <span className="qa-icon">{icon}</span>
-              <span className="qa-text">{text}</span>
-            </button>
-          ))}
-        </div>
+      {/* KPI Cards */}
+      <section className="kpi-section">
+        <KPICards
+          jobs={filteredJobs}
+          displayMode={displayMode}
+          locationCounts={locationCounts}
+        />
       </section>
 
-      {/* Filters */}
-      <section className="filters-section">
-        <div className="filter-group">
-          <label htmlFor="filterPO">PO Number</label>
+      {/* Filter Row */}
+      <section className="filter-section">
+        <FilterRow
+          uniqueSKUs={uniqueSKUs}
+          selectedSKUs={selectedSKUs}
+          onSKUsChange={setSelectedSKUs}
+          selectedLocations={selectedLocations}
+          onLocationsChange={setSelectedLocations}
+          selectedUrgencies={selectedUrgencies}
+          onUrgenciesChange={setSelectedUrgencies}
+          onClearAll={clearAllFilters}
+        />
+      </section>
+
+      {/* Analytics Panel */}
+      <section className="analytics-section">
+        <AnalyticsPanel
+          jobs={filteredJobs}
+          displayMode={displayMode}
+          locationCounts={locationCounts}
+        />
+      </section>
+
+      {/* Quick Query (collapsed) */}
+      <section className="query-section">
+        <div className="query-assistant-compact">
           <input
             type="text"
-            id="filterPO"
-            className="filter-input"
-            placeholder="e.g. 34165"
-            value={filters.po}
-            onChange={(e) => setFilters(prev => ({ ...prev, po: e.target.value }))}
+            className="query-input"
+            placeholder="Quick query: e.g., 'How many jobs at polishing?'"
+            value={queryInput}
+            onChange={(e) => setQueryInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && runQuery(queryInput)}
           />
-        </div>
-        <div className="filter-group">
-          <label htmlFor="filterSKU">Design / SKU</label>
-          <input
-            type="text"
-            id="filterSKU"
-            className="filter-input"
-            placeholder="e.g. C8812E"
-            value={filters.sku}
-            onChange={(e) => setFilters(prev => ({ ...prev, sku: e.target.value }))}
-          />
-        </div>
-        <div className="filter-group">
-          <label htmlFor="filterLocation">Location</label>
-          <select
-            id="filterLocation"
-            className="filter-select"
-            value={filters.location}
-            onChange={(e) => setFilters(prev => ({ ...prev, location: e.target.value }))}
+          <button
+            className="query-help-btn"
+            onClick={() => setShowQueryHelp(!showQueryHelp)}
+            title="Query help"
           >
-            <option value="">All Locations</option>
-            {uniqueLocations.map(loc => (
-              <option key={loc} value={loc}>{loc}</option>
-            ))}
-          </select>
-        </div>
-        <div className="filter-group">
-          <label htmlFor="filterPlating">Plating</label>
-          <select
-            id="filterPlating"
-            className="filter-select"
-            value={filters.plating}
-            onChange={(e) => setFilters(prev => ({ ...prev, plating: e.target.value }))}
-          >
-            <option value="">All Plating</option>
-            {uniquePlatings.map(p => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-        </div>
-        <button className="btn btn-secondary" onClick={clearFilters}>
-          Clear Filters
-        </button>
-      </section>
-
-      {/* Location Summary Cards */}
-      <section className="location-cards">
-        {LOCATION_ORDER.filter(loc => locationCounts[loc]?.jobs > 0 || loc !== "Other").map(loc => (
-          <div
-            key={loc}
-            className={`location-card ${filters.location === loc ? "active" : ""}`}
-            data-location={loc}
-            onClick={() => setFilters(prev => ({
-              ...prev,
-              location: prev.location === loc ? "" : loc
-            }))}
-          >
-            <div className="location-name">{loc}</div>
-            <div className="location-count">{locationCounts[loc]?.jobs || 0}</div>
-          </div>
-        ))}
-      </section>
-
-      {/* Location Distribution Chart */}
-      <section className="distribution-section">
-        <div className="section-header">
-          <h2>Location Distribution</h2>
-          <div className="chart-toggle distribution-toggle">
-            <button
-              className={`toggle-btn ${distributionMode === "jobs" ? "active" : ""}`}
-              onClick={() => setDistributionMode("jobs")}
-            >
-              Jobs
-            </button>
-            <button
-              className={`toggle-btn ${distributionMode === "pieces" ? "active" : ""}`}
-              onClick={() => setDistributionMode("pieces")}
-            >
-              Pieces
-            </button>
-          </div>
-        </div>
-        <div className="distribution-chart">
-          <div className="dist-totals">
-            <div className="dist-total-item">
-              <div className="dist-total-value">{filteredJobs.length}</div>
-              <div className="dist-total-label">Total Jobs</div>
+            ?
+          </button>
+          {queryResult && (
+            <div className="query-results-inline">
+              <span className="query-answer-text">{queryResult.answer}</span>
+              <span className="query-detail-text">{queryResult.detail}</span>
+              <button
+                className="query-close-btn"
+                onClick={() => setQueryResult(null)}
+              >
+                &times;
+              </button>
             </div>
-            <div className="dist-total-item">
-              <div className="dist-total-value">
-                {filteredJobs.reduce((sum, j) => sum + (j.batchQty || 0), 0).toLocaleString()}
-              </div>
-              <div className="dist-total-label">Total Pieces</div>
-            </div>
-          </div>
-          {LOCATION_ORDER.filter(loc => locationCounts[loc]?.jobs > 0).map(loc => {
-            const count = locationCounts[loc];
-            const value = distributionMode === "jobs" ? count.jobs : count.pieces;
-            const total = distributionMode === "jobs"
-              ? filteredJobs.length
-              : filteredJobs.reduce((sum, j) => sum + (j.batchQty || 0), 0);
-            const percent = total > 0 ? Math.round((value / total) * 100) : 0;
-
-            return (
-              <div key={loc} className="dist-bar-row">
-                <div className="dist-bar-label">{loc}</div>
-                <div className="dist-bar-track">
-                  <div
-                    className="dist-bar-fill"
-                    data-location={loc}
-                    style={{ width: `${percent}%` }}
-                  >
-                    {percent > 10 && <span>{value}</span>}
-                  </div>
-                </div>
-                <div className="dist-bar-value">
-                  {value.toLocaleString()}
-                  <span className="percent">({percent}%)</span>
-                </div>
-              </div>
-            );
-          })}
+          )}
         </div>
       </section>
 
@@ -597,7 +534,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                         <div className="kanban-card-sku">{job.sku}</div>
                         <div className="kanban-card-po">
                           PO:{" "}
-                          <span onClick={(e) => { e.stopPropagation(); setSelectedPO(job.poNo); }}>
+                          <span onClick={(e) => { e.stopPropagation(); setSelectedPOModal(job.poNo); }}>
                             {job.poNo}
                           </span>
                         </div>
@@ -612,9 +549,22 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
         {/* Table View */}
         {viewMode === "table" && (
           <div className="table-container">
+            {selectedJobIds.length > 0 && (
+              <div className="selection-info">
+                {selectedJobIds.length} job{selectedJobIds.length > 1 ? 's' : ''} selected
+              </div>
+            )}
             <table className="data-table">
               <thead>
                 <tr>
+                  <th className="checkbox-col">
+                    <input
+                      type="checkbox"
+                      checked={selectedJobIds.length === filteredJobs.length && filteredJobs.length > 0}
+                      onChange={toggleSelectAll}
+                      title="Select all"
+                    />
+                  </th>
                   {[
                     { key: "jobNo", label: "Job No" },
                     { key: "poNo", label: "PO No" },
@@ -642,12 +592,23 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
               </thead>
               <tbody>
                 {filteredJobs.map(job => (
-                  <tr key={job.jobNo} onClick={() => setSelectedJob(job)}>
+                  <tr
+                    key={job.jobNo}
+                    className={selectedJobIds.includes(job.jobNo) ? "selected" : ""}
+                    onClick={() => setSelectedJob(job)}
+                  >
+                    <td className="checkbox-col" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedJobIds.includes(job.jobNo)}
+                        onChange={() => toggleJobSelection(job.jobNo)}
+                      />
+                    </td>
                     <td><strong>{job.jobNo}</strong></td>
                     <td>
                       <span
                         className="po-link"
-                        onClick={(e) => { e.stopPropagation(); setSelectedPO(job.poNo); }}
+                        onClick={(e) => { e.stopPropagation(); setSelectedPOModal(job.poNo); }}
                       >
                         {job.poNo}
                       </span>
@@ -758,12 +719,12 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
       )}
 
       {/* PO Analytics Modal */}
-      {selectedPO && poStats && (
-        <div className="modal-overlay" onClick={() => setSelectedPO(null)}>
+      {selectedPOModal && poStats && (
+        <div className="modal-overlay" onClick={() => setSelectedPOModal(null)}>
           <div className="modal po-analytics-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>PO {selectedPO} Analytics</h2>
-              <button className="modal-close" onClick={() => setSelectedPO(null)}>
+              <h2>PO {selectedPOModal} Analytics</h2>
+              <button className="modal-close" onClick={() => setSelectedPOModal(null)}>
                 &times;
               </button>
             </div>
@@ -872,7 +833,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                       <div
                         key={job.jobNo}
                         className="po-job-item"
-                        onClick={() => { setSelectedPO(null); setSelectedJob(job); }}
+                        onClick={() => { setSelectedPOModal(null); setSelectedJob(job); }}
                       >
                         <span className="job-no">{job.jobNo}</span>
                         <span className="job-sku">{job.sku}</span>
