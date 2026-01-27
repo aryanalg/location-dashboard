@@ -487,20 +487,20 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
             </button>
             <div className="view-toggle">
               <button
-                className={`view-btn ${viewMode === "table" ? "active" : ""}`}
-                data-view="table"
-                title="Table View"
-                onClick={() => setViewMode("table")}
-              >
-                ☰
-              </button>
-              <button
                 className={`view-btn ${viewMode === "kanban" ? "active" : ""}`}
                 data-view="kanban"
                 title="Kanban View"
                 onClick={() => setViewMode("kanban")}
               >
                 ▦
+              </button>
+              <button
+                className={`view-btn ${viewMode === "table" ? "active" : ""}`}
+                data-view="table"
+                title="Table View"
+                onClick={() => setViewMode("table")}
+              >
+                ☰
               </button>
             </div>
           </div>
