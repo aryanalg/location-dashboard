@@ -108,6 +108,7 @@ html, body {
   padding: var(--space-md) var(--space-lg);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
+  border-top: none;
   border-radius: var(--radius-lg);
   margin-bottom: var(--space-lg);
 }
@@ -115,17 +116,26 @@ html, body {
 .logo-section {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-md);
 }
 
 .logo-icon {
-  height: 32px;
+  height: 38px;
   width: auto;
+  flex-shrink: 0;
+  border: none;
+  display: block;
+}
+
+.logo-separator {
+  width: 1px;
+  height: 32px;
+  background: var(--border-default);
   flex-shrink: 0;
 }
 
 .logo-text h1 {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: 500;
   color: var(--text-primary);
   line-height: 1.2;

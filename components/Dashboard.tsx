@@ -331,6 +331,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
       <header className="top-bar">
         <div className="logo-section">
           <img src="/nxt-logo.png" alt="NXT" className="logo-icon" />
+          <span className="logo-separator" />
           <div className="logo-text">
             <h1>Location Dashboard</h1>
             <span className="subtitle">Production Planning</span>
