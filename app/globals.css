@@ -109,10 +109,23 @@ body {
     margin-bottom: var(--space-lg);
 }
 
+.logo-section {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.logo-icon {
+    height: 32px;
+    width: auto;
+    flex-shrink: 0;
+}
+
 .logo-text h1 {
     font-size: 1.5rem;
     font-weight: 500;
     color: var(--text-primary);
+    line-height: 1.2;
 }
 
 .logo-text .subtitle {
@@ -1781,6 +1794,12 @@ body {
 
 .signin-logo {
     margin-bottom: var(--space-lg);
+}
+
+.signin-logo-img {
+    height: 52px;
+    width: auto;
+    margin-bottom: var(--space-md);
 }
 
 .signin-logo h1 {

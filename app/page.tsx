@@ -26,6 +26,7 @@ export default function Home() {
       <div className="signin-container">
         <div className="signin-card">
           <div className="signin-logo">
+            <img src="/nxt-logo.png" alt="NXT" className="signin-logo-img" />
             <h1>Location Dashboard</h1>
             <p>Job Cart Tracker - Next Manufacturing</p>
           </div>
@@ -52,6 +53,7 @@ export default function Home() {
       <div className="signin-container">
         <div className="signin-card">
           <div className="signin-logo">
+            <img src="/nxt-logo.png" alt="NXT" className="signin-logo-img" />
             <h1>Location Dashboard</h1>
             <p>Session Expired</p>
           </div>

@@ -112,10 +112,23 @@ html, body {
   margin-bottom: var(--space-lg);
 }
 
+.logo-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-icon {
+  height: 32px;
+  width: auto;
+  flex-shrink: 0;
+}
+
 .logo-text h1 {
   font-size: var(--text-xl);
   font-weight: 500;
   color: var(--text-primary);
+  line-height: 1.2;
 }
 
 .logo-text .subtitle {
