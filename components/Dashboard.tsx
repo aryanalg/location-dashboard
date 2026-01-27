@@ -44,7 +44,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortColumn, setSortColumn] = useState<keyof Job | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
-  const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
+  const [viewMode, setViewMode] = useState<"table" | "kanban">("kanban");
 
   // Modal state
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);

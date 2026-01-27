@@ -151,7 +151,7 @@ let state = {
     // Distribution chart
     distributionMode: 'jobs', // 'jobs' or 'pieces'
     // View mode
-    viewMode: 'table' // 'table' or 'kanban'
+    viewMode: 'kanban' // 'table' or 'kanban'
 };
 
 // ============================================
