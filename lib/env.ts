@@ -23,26 +23,61 @@ const requiredEnvVars: (keyof EnvConfig)[] = [
   'AZURE_AD_CLIENT_SECRET',
   'AZURE_AD_TENANT_ID',
   'NEXTAUTH_SECRET',
-  'SHAREPOINT_HOSTNAME',
-  'SHAREPOINT_SITE_PATH',
-  'SHAREPOINT_DRIVE_NAME',
-  'EXCEL_FILE_PATH',
 ];
+
+function isPlaceholder(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    normalized.includes("your-") ||
+    normalized.includes("generate-") ||
+    normalized.includes("changeme")
+  );
+}
+
+function isGuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
 
 // Validate environment variables and return typed config
 function validateEnv(): EnvConfig {
   const missing: string[] = [];
+  const invalid: string[] = [];
 
   for (const envVar of requiredEnvVars) {
-    if (!process.env[envVar]) {
+    const value = process.env[envVar]?.trim();
+    if (!value) {
       missing.push(envVar);
+      continue;
     }
+    if (isPlaceholder(value)) {
+      invalid.push(`${envVar} (placeholder value)`);
+    }
+  }
+
+  const clientId = process.env.AZURE_AD_CLIENT_ID?.trim();
+  const tenantId = process.env.AZURE_AD_TENANT_ID?.trim();
+  const nextAuthUrl = process.env.NEXTAUTH_URL?.trim();
+
+  if (clientId && !isPlaceholder(clientId) && !isGuid(clientId)) {
+    invalid.push("AZURE_AD_CLIENT_ID (must be a GUID)");
+  }
+  if (tenantId && !isPlaceholder(tenantId) && !isGuid(tenantId)) {
+    invalid.push("AZURE_AD_TENANT_ID (must be a GUID)");
+  }
+  if (nextAuthUrl && !/^https?:\/\//i.test(nextAuthUrl)) {
+    invalid.push("NEXTAUTH_URL (must start with http:// or https://)");
   }
 
   if (missing.length > 0) {
     throw new Error(
       `Missing required environment variables: ${missing.join(', ')}\n` +
       `Please check your .env.local file or Vercel environment settings.`
+    );
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid environment variable values: ${invalid.join(", ")}\n` +
+      `Please fix your .env.local file and restart the server.`
     );
   }
 

@@ -3,6 +3,8 @@ import { JWT } from "next-auth/jwt";
 import AzureADProvider from "next-auth/providers/azure-ad";
 import { getEnv } from "./env";
 
+const authEnv = getEnv();
+
 interface RefreshedTokenResponse {
   access_token?: string;
   expires_in?: number;
@@ -58,12 +60,12 @@ async function refreshAccessToken(token: JWT): Promise<JWT> {
 }
 
 export const authOptions: NextAuthOptions = {
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: authEnv.NEXTAUTH_SECRET,
   providers: [
     AzureADProvider({
-      clientId: process.env.AZURE_AD_CLIENT_ID!,
-      clientSecret: process.env.AZURE_AD_CLIENT_SECRET!,
-      tenantId: process.env.AZURE_AD_TENANT_ID!,
+      clientId: authEnv.AZURE_AD_CLIENT_ID,
+      clientSecret: authEnv.AZURE_AD_CLIENT_SECRET,
+      tenantId: authEnv.AZURE_AD_TENANT_ID,
       authorization: {
         params: {
           // Added offline_access for refresh tokens

@@ -154,6 +154,8 @@ function sanitizeErrorMessage(message: string): string {
   const safePatterns = [
     /Drive ".*" not found/,
     /SharePoint configuration missing/,
+    /SharePoint site could not be resolved/,
+    /Requested site could not be found/,
     /File not found/,
     /Sheet .* not found/,
   ];

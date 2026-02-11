@@ -10,6 +10,8 @@ import {
 
 interface GraphSite {
   id?: string;
+  name?: string;
+  webUrl?: string;
 }
 
 interface GraphDrive {
@@ -19,6 +21,10 @@ interface GraphDrive {
 
 interface GraphDrivesResponse {
   value?: GraphDrive[];
+}
+
+interface GraphSitesResponse {
+  value?: GraphSite[];
 }
 
 interface GraphWorksheet {
@@ -34,6 +40,9 @@ interface GraphFileInfo {
   id: string;
   name?: string;
   lastModifiedDateTime?: string;
+  parentReference?: {
+    path?: string;
+  };
 }
 
 interface GraphSession {
@@ -42,6 +51,10 @@ interface GraphSession {
 
 interface GraphRangeResponse {
   values?: unknown[][];
+}
+
+interface GraphDriveItemsResponse {
+  value?: GraphFileInfo[];
 }
 
 function shouldLogImportDiagnostics(): boolean {
@@ -55,6 +68,269 @@ export function getGraphClient(accessToken: string) {
       done(null, accessToken);
     },
   });
+}
+
+function uniqueNonEmpty(values: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of values) {
+    const value = raw?.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function normalizeSitePath(sitePath: string): string {
+  const trimmed = sitePath.trim();
+  if (!trimmed) return "";
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function normalizeDriveName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeGraphPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) return "/";
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function getPathFileName(path: string): string {
+  const parts = normalizeGraphPath(path).split("/").filter(Boolean);
+  return parts[parts.length - 1] || "";
+}
+
+function isGraphItemNotFound(error: unknown): boolean {
+  return typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === "itemNotFound";
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("File not found in SharePoint drive");
+}
+
+function getPathCandidatesForDrive(filePath: string, driveName: string): string[] {
+  const normalized = normalizeGraphPath(filePath);
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length === 0) return [normalized];
+
+  const first = normalizeDriveName(parts[0]);
+  const driveAliases = new Set<string>([
+    normalizeDriveName(driveName),
+    "documents",
+    "business - documents",
+    "เอกสาร",
+    "shared documents",
+  ]);
+
+  const stripped = driveAliases.has(first) ? `/${parts.slice(1).join("/")}` : "";
+  return uniqueNonEmpty([normalized, stripped]);
+}
+
+async function tryGetFileByPath(
+  client: Client,
+  siteId: string,
+  driveId: string,
+  filePath: string
+): Promise<GraphFileInfo | null> {
+  try {
+    return await client.api(`/sites/${siteId}/drives/${driveId}/root:${filePath}`).get() as GraphFileInfo;
+  } catch (error) {
+    if (isGraphItemNotFound(error)) return null;
+    throw error;
+  }
+}
+
+async function resolveWorkbookFileInfo(
+  client: Client,
+  siteId: string,
+  driveId: string,
+  driveName: string,
+  configuredFilePath: string
+): Promise<GraphFileInfo> {
+  const pathCandidates = getPathCandidatesForDrive(configuredFilePath, driveName);
+
+  for (const candidate of pathCandidates) {
+    const info = await tryGetFileByPath(client, siteId, driveId, candidate);
+    if (info) {
+      if (shouldLogImportDiagnostics() && candidate !== normalizeGraphPath(configuredFilePath)) {
+        console.log(`Resolved workbook path via fallback candidate: ${candidate}`);
+      }
+      return info;
+    }
+  }
+
+  // Fallback to drive search by file name.
+  const fileName = getPathFileName(configuredFilePath);
+  if (fileName) {
+    const escaped = fileName.replace(/'/g, "''");
+    const searchResponse = await client
+      .api(`/sites/${siteId}/drives/${driveId}/root/search(q='${escaped}')`)
+      .get() as GraphDriveItemsResponse;
+    const items = searchResponse.value || [];
+    if (items.length > 0) {
+      const targetFolderPath = normalizeGraphPath(configuredFilePath)
+        .split("/")
+        .filter(Boolean)
+        .slice(0, -1)
+        .join("/")
+        .toLowerCase();
+
+      const scored = items
+        .map((item) => {
+          let score = 0;
+          const name = (item.name || "").toLowerCase();
+          const parentPath = (item.parentReference?.path || "").toLowerCase();
+          if (name === fileName.toLowerCase()) score += 20;
+          if (targetFolderPath && parentPath.includes(targetFolderPath)) score += 10;
+          if (name.endsWith(".xlsx")) score += 3;
+          return { item, score };
+        })
+        .sort((a, b) => b.score - a.score);
+
+      const best = scored[0]?.item;
+      if (best?.id) {
+        if (shouldLogImportDiagnostics()) {
+          console.log(
+            `Resolved workbook via search: ${best.name || best.id} (${best.parentReference?.path || "unknown path"})`
+          );
+        }
+        return best;
+      }
+    }
+  }
+
+  throw new Error(
+    `File not found in SharePoint drive "${driveName}". Checked path "${configuredFilePath}".`
+  );
+}
+
+function siteHostFromWebUrl(webUrl?: string): string {
+  if (!webUrl) return "";
+  try {
+    return new URL(webUrl).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function sitePathFromWebUrl(webUrl?: string): string {
+  if (!webUrl) return "";
+  try {
+    return new URL(webUrl).pathname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+async function tryResolveSiteIdByPath(
+  client: Client,
+  hostname: string,
+  sitePath: string
+): Promise<string | null> {
+  try {
+    const site = await client.api(`/sites/${hostname}:${sitePath}`).get() as GraphSite;
+    return site.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSharePointSiteId(
+  client: Client,
+  hostname: string,
+  sitePath: string
+): Promise<string> {
+  const normalizedPath = normalizeSitePath(sitePath);
+  const strippedParenthesesPath = normalizedPath.replace(/[()]/g, "");
+  const pathCandidates = uniqueNonEmpty([
+    normalizedPath,
+    strippedParenthesesPath !== normalizedPath ? strippedParenthesesPath : undefined,
+  ]);
+
+  const normalizedHost = hostname.trim().toLowerCase();
+  const hostCandidates = uniqueNonEmpty([
+    normalizedHost,
+    normalizedHost.includes("-my.") ? normalizedHost.replace("-my.", ".") : undefined,
+  ]);
+
+  // 1) Fast path: direct site lookup with configured/fallback host and path variants.
+  for (const hostCandidate of hostCandidates) {
+    for (const pathCandidate of pathCandidates) {
+      const siteId = await tryResolveSiteIdByPath(client, hostCandidate, pathCandidate);
+      if (siteId) {
+        if (shouldLogImportDiagnostics() && (hostCandidate !== normalizedHost || pathCandidate !== normalizedPath)) {
+          console.log(
+            `Resolved SharePoint site with fallback host/path: ${hostCandidate}${pathCandidate}`
+          );
+        }
+        return siteId;
+      }
+    }
+  }
+
+  // 2) Fallback: tenant-wide site search and best-match scoring.
+  const rawSiteSegment = normalizedPath.split("/").filter(Boolean).pop() || "";
+  const cleanedSiteSegment = rawSiteSegment.replace(/[^a-zA-Z0-9]/g, "");
+  const searchTerms = uniqueNonEmpty([rawSiteSegment, cleanedSiteSegment]);
+  const discoveredSites: GraphSite[] = [];
+  const seenIds = new Set<string>();
+
+  for (const term of searchTerms) {
+    try {
+      const searchResponse = await client
+        .api(`/sites?search=${encodeURIComponent(term)}`)
+        .get() as GraphSitesResponse;
+      for (const site of searchResponse.value || []) {
+        if (!site.id || seenIds.has(site.id)) continue;
+        seenIds.add(site.id);
+        discoveredSites.push(site);
+      }
+    } catch {
+      // continue to next term
+    }
+  }
+
+  if (discoveredSites.length > 0) {
+    const scoreSite = (site: GraphSite): number => {
+      let score = 0;
+      const webHost = siteHostFromWebUrl(site.webUrl);
+      const webPath = sitePathFromWebUrl(site.webUrl);
+      const normalizedName = (site.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const normalizedWanted = cleanedSiteSegment.toLowerCase();
+
+      if (hostCandidates.includes(webHost)) score += 30;
+      if (rawSiteSegment && webPath.includes(rawSiteSegment.toLowerCase())) score += 20;
+      if (normalizedWanted && webPath.replace(/[^a-z0-9]/g, "").includes(normalizedWanted)) score += 12;
+      if (normalizedWanted && normalizedName.includes(normalizedWanted)) score += 8;
+
+      return score;
+    };
+
+    const ranked = discoveredSites
+      .map((site) => ({ site, score: scoreSite(site) }))
+      .sort((a, b) => b.score - a.score);
+
+    const best = ranked[0];
+    if (best?.site.id && best.score > 0) {
+      if (shouldLogImportDiagnostics()) {
+        console.log(
+          `Resolved SharePoint site via search: ${best.site.webUrl || best.site.name || best.site.id}`
+        );
+      }
+      return best.site.id;
+    }
+  }
+
+  throw new Error(
+    `SharePoint site could not be resolved for hostname "${hostname}" and site path "${sitePath}". ` +
+    `Check SHAREPOINT_HOSTNAME/SHAREPOINT_SITE_PATH or set SHAREPOINT_SITE_ID directly.`
+  );
 }
 
 // Column mappings from Excel headers to our job properties
@@ -164,6 +440,33 @@ function formatDateDMY(value: unknown): string {
   return str;
 }
 
+function isNonDataJobToken(normalizedJobNo: string): boolean {
+  return /^(job no|total|subtotal|grand total|nan|null|-|n\/a)$/i.test(normalizedJobNo);
+}
+
+function derivePoFromSheetName(sheetName: string): string {
+  const trimmed = sheetName.trim();
+  if (/^samples$/i.test(trimmed)) {
+    return "Samples";
+  }
+  const customerFormatMatch = trimmed.match(/^C[A-Z0-9]+-([A-Z0-9]+)/i);
+  if (customerFormatMatch?.[1]) {
+    return customerFormatMatch[1];
+  }
+  const legacyMatch = trimmed.match(/^(\d{5})/);
+  if (legacyMatch?.[1]) {
+    return legacyMatch[1];
+  }
+  return "";
+}
+
+function derivePoFromJobNo(jobNo: string): string {
+  const normalized = jobNo.toUpperCase();
+  if (!normalized.startsWith("SO")) return "";
+  const parts = normalized.replace("SO", "").split("-");
+  return parts.length > 0 ? parts[0] : "";
+}
+
 // Parse a worksheet's data into Job objects
 function parseWorksheetData(
   values: unknown[][],
@@ -198,34 +501,44 @@ function parseWorksheetData(
     const jobNo = safeString(row[colIndex['jobNo']]);
     const normalizedJobNo = jobNo.toUpperCase();
 
-    // Skip empty rows or rows that don't start with 'SO'
-    if (!jobNo || !normalizedJobNo.startsWith('SO')) continue;
+    // Skip obvious non-data rows.
+    if (!jobNo || isNonDataJobToken(normalizedJobNo)) continue;
 
     // Extract PO number
     let poNo = safeString(row[colIndex['poNo']]).replace('.0', '');
     if (!poNo) {
-      // Try to extract from job number (e.g., SO40413-001-J1 -> 40413)
-      const parts = jobNo.replace('SO', '').split('-');
-      if (parts.length > 0) {
-        poNo = parts[0];
-      }
+      // Prefer job-derived PO for SO rows; then fallback to sheet name convention.
+      poNo = derivePoFromJobNo(jobNo) || derivePoFromSheetName(sheetName);
     }
 
     const location = safeString(row[colIndex['location']]);
+    const sku = safeString(row[colIndex['sku']]);
+    const notesPre = safeString(row[colIndex['notesPre']]);
+    const notesNew = safeString(row[colIndex['notesNew']]);
+    const batchQty = safeInt(row[colIndex['batchQty']]);
+    const totalQty = safeInt(row[colIndex['totalQty']]);
+
+    const isStrictSO = normalizedJobNo.startsWith('SO');
+    const hasOperationalData = Boolean(
+      location || sku || poNo || batchQty > 0 || totalQty > 0 || notesPre || notesNew
+    );
+
+    // New tabs/samples may use non-SO job prefixes; include only if row still looks like real data.
+    if (!isStrictSO && !hasOperationalData) continue;
 
     const job: Job = {
       jobNo,
       poNo,
-      sku: safeString(row[colIndex['sku']]),
+      sku,
       plating: safeString(row[colIndex['plating']]),
-      batchQty: safeInt(row[colIndex['batchQty']]),
-      totalQty: safeInt(row[colIndex['totalQty']]),
+      batchQty,
+      totalQty,
       size: safeString(row[colIndex['size']]),
       location,
       normalizedLocation: normalizeLocation(location),
       deliveryDate: formatDateDMY(row[colIndex['deliveryDate']]),
-      notesPre: safeString(row[colIndex['notesPre']]),
-      notesNew: safeString(row[colIndex['notesNew']]),
+      notesPre,
+      notesNew,
       dateSending: formatDate(row[colIndex['dateSending']]),
       dateReceive: formatDate(row[colIndex['dateReceive']]),
       weightCasting: safeFloat(row[colIndex['weightCasting']]),
@@ -246,6 +559,8 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
 
   const hostname = process.env.SHAREPOINT_HOSTNAME;
   const sitePath = process.env.SHAREPOINT_SITE_PATH;
+  const explicitSiteId = process.env.SHAREPOINT_SITE_ID?.trim();
+  const explicitDriveId = process.env.SHAREPOINT_DRIVE_ID?.trim();
   const filePath = process.env.EXCEL_FILE_PATH;
   const driveName = process.env.SHAREPOINT_DRIVE_NAME || 'Documents';
 
@@ -255,36 +570,87 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
 
   const allJobs: Job[] = [];
 
-  // First, get the site ID
-  const siteResponse = await client
-    .api(`/sites/${hostname}:${sitePath}`)
-    .get() as GraphSite;
-
-  const siteId = siteResponse.id;
-  if (!siteId) {
-    throw new Error("Failed to resolve SharePoint site ID.");
-  }
+  // First, resolve the site ID.
+  const siteId = explicitSiteId || await resolveSharePointSiteId(client, hostname, sitePath);
 
   // Get all drives and find the one we need
   const drivesResponse = await client.api(`/sites/${siteId}/drives`).get() as GraphDrivesResponse;
   const drives = drivesResponse.value || [];
 
-  // Find the target drive by name
-  const targetDrive = drives.find((d) => d.name === driveName);
+  // Find target drive by explicit ID first, then configured name, then default "Documents".
+  let targetDrive: GraphDrive | undefined;
+  if (explicitDriveId) {
+    targetDrive = drives.find((d) => d.id === explicitDriveId);
+  }
+  if (!targetDrive) {
+    const wanted = normalizeDriveName(driveName);
+    targetDrive = drives.find((d) => normalizeDriveName(d.name) === wanted);
+  }
+  if (!targetDrive && driveName !== "Documents") {
+    targetDrive = drives.find((d) => normalizeDriveName(d.name) === "documents");
+  }
+  // Final safety fallback: if there is only one drive visible, use it.
+  if (!targetDrive && drives.length === 1) {
+    targetDrive = drives[0];
+    if (shouldLogImportDiagnostics()) {
+      console.log(`Falling back to only available drive: ${targetDrive.name}`);
+    }
+  }
   if (!targetDrive) {
     throw new Error(`Drive "${driveName}" not found. Available drives: ${drives.map((d) => d.name).join(', ')}`);
   }
   try {
-    // Get file info using direct path
-    const itemPath = `/sites/${siteId}/drives/${targetDrive.id}/root:${filePath}`;
-    const fileInfo = await client.api(itemPath).get() as GraphFileInfo;
+    let activeDrive = targetDrive;
+    let fileInfo: GraphFileInfo | null = null;
+
+    try {
+      fileInfo = await resolveWorkbookFileInfo(
+        client,
+        siteId,
+        activeDrive.id,
+        activeDrive.name,
+        filePath
+      );
+    } catch (error) {
+      if (!isFileNotFoundError(error)) {
+        throw error;
+      }
+
+      // Fallback: workbook may exist in another library/drive.
+      for (const drive of drives) {
+        if (drive.id === activeDrive.id) continue;
+        try {
+          const candidate = await resolveWorkbookFileInfo(
+            client,
+            siteId,
+            drive.id,
+            drive.name,
+            filePath
+          );
+          fileInfo = candidate;
+          activeDrive = drive;
+          if (shouldLogImportDiagnostics()) {
+            console.log(`Resolved workbook in fallback drive: ${drive.name}`);
+          }
+          break;
+        } catch (driveError) {
+          if (!isFileNotFoundError(driveError)) {
+            throw driveError;
+          }
+        }
+      }
+
+      if (!fileInfo) {
+        throw error;
+      }
+    }
     // Debug log only in development
     if (shouldLogImportDiagnostics()) {
       console.log(`Reading: ${fileInfo.name} (modified: ${fileInfo.lastModifiedDateTime})`);
     }
 
     // Use the file's ID to access the workbook API (more reliable)
-    const workbookPath = `/sites/${siteId}/drives/${targetDrive.id}/items/${fileInfo.id}/workbook`;
+    const workbookPath = `/sites/${siteId}/drives/${activeDrive.id}/items/${fileInfo.id}/workbook`;
 
     // Create a non-persistent session to get fresh data (reduces caching)
     let sessionId: string | null = null;

@@ -44,7 +44,11 @@ UPSTASH_REDIS_REST_TOKEN=
 # SharePoint/OneDrive - Excel File Location
 SHAREPOINT_HOSTNAME=your-company.sharepoint.com
 SHAREPOINT_SITE_PATH=/sites/YourSite
+# Optional exact IDs (recommended if site/path lookup is unreliable)
+SHAREPOINT_SITE_ID=
 SHAREPOINT_DRIVE_NAME=Documents
+# Optional exact drive ID
+SHAREPOINT_DRIVE_ID=
 EXCEL_FILE_PATH=/path/to/your/workbook.xlsx
 
 # Optional worksheet selection overrides
@@ -63,6 +67,8 @@ EXCEL_IMPORT_LOG=false
 2. Copy the hostname (e.g. `contoso.sharepoint.com`)
 3. Copy the site path from the URL (e.g. `/sites/ProductionOps`)
 4. Use your document library display name for `SHAREPOINT_DRIVE_NAME` (usually `Documents`)
+
+If hostname/path lookup fails, set `SHAREPOINT_SITE_ID` (and optionally `SHAREPOINT_DRIVE_ID`) to bypass path resolution completely.
 
 ### Worksheet Selection Logic
 
@@ -132,7 +138,9 @@ Open [http://localhost:3000](http://localhost:3000)
 | `UPSTASH_REDIS_REST_TOKEN` | Optional Redis token for shared rate limiting |
 | `SHAREPOINT_HOSTNAME` | SharePoint host, e.g. `contoso.sharepoint.com` |
 | `SHAREPOINT_SITE_PATH` | SharePoint site path, e.g. `/sites/ProductionOps` |
+| `SHAREPOINT_SITE_ID` | Optional exact Graph site ID to bypass path lookup |
 | `SHAREPOINT_DRIVE_NAME` | Drive/library display name, usually `Documents` |
+| `SHAREPOINT_DRIVE_ID` | Optional exact Graph drive ID to bypass drive-name lookup |
 | `EXCEL_FILE_PATH` | Path to Excel file in drive |
 | `EXCEL_PO_SHEET_REGEX` | Optional PO tab naming regex for multi-customer patterns |
 

@@ -33,6 +33,8 @@ interface PORisk {
   pieceCount: number;
 }
 
+const SHIPPED_PO_STORAGE_KEY = "location-dashboard-shipped-pos-v1";
+
 const NUMERIC_SORT_COLUMNS: (keyof Job)[] = [
   "batchQty",
   "totalQty",
@@ -103,6 +105,75 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   const [queryInput, setQueryInput] = useState("");
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
   const [showQueryHelp, setShowQueryHelp] = useState(false);
+  const [shippedPOs, setShippedPOs] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(SHIPPED_PO_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, string>;
+      if (parsed && typeof parsed === "object") {
+        setShippedPOs(parsed);
+      }
+    } catch {
+      // Ignore invalid local storage data.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SHIPPED_PO_STORAGE_KEY, JSON.stringify(shippedPOs));
+  }, [shippedPOs]);
+
+  const markPOAsShipped = useCallback((poNo: string) => {
+    const normalized = poNo.trim();
+    if (!normalized) return;
+    setShippedPOs((prev) => {
+      if (prev[normalized]) return prev;
+      return { ...prev, [normalized]: new Date().toISOString() };
+    });
+  }, []);
+
+  const undoPOShipped = useCallback((poNo: string) => {
+    const normalized = poNo.trim();
+    if (!normalized) return;
+    setShippedPOs((prev) => {
+      if (!prev[normalized]) return prev;
+      const next = { ...prev };
+      delete next[normalized];
+      return next;
+    });
+  }, []);
+
+  const markSelectedPOsAsShipped = useCallback(() => {
+    if (selectedPOs.length === 0) return;
+    setShippedPOs((prev) => {
+      const next = { ...prev };
+      const timestamp = new Date().toISOString();
+      selectedPOs.forEach((po) => {
+        const normalized = po.trim();
+        if (!normalized) return;
+        if (!next[normalized]) {
+          next[normalized] = timestamp;
+        }
+      });
+      return next;
+    });
+  }, [selectedPOs]);
+
+  const undoSelectedPOsShipped = useCallback(() => {
+    if (selectedPOs.length === 0) return;
+    setShippedPOs((prev) => {
+      const next = { ...prev };
+      selectedPOs.forEach((po) => {
+        const normalized = po.trim();
+        if (!normalized) return;
+        delete next[normalized];
+      });
+      return next;
+    });
+  }, [selectedPOs]);
 
   // Fetch data
   const fetchData = useCallback(async (isManual = false) => {
@@ -148,13 +219,16 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   // Computed values
   const uniquePOs = useMemo(() => [...new Set(jobs.map(j => j.poNo).filter(Boolean))].sort(), [jobs]);
   const uniqueSKUs = useMemo(() => [...new Set(jobs.map(j => j.sku).filter(Boolean))].sort(), [jobs]);
+  const shippedPOList = useMemo(() => Object.keys(shippedPOs).sort(), [shippedPOs]);
 
   // Get delivery date for selected POs
   const selectedPOsDeliveryDate = useMemo(() => {
     if (selectedPOs.length === 0) return null;
+    const activeSelectedPOs = selectedPOs.filter((po) => !shippedPOs[po]);
+    if (activeSelectedPOs.length === 0) return null;
     const dates = new Set<string>();
     jobs.forEach(j => {
-      if (selectedPOs.includes(j.poNo) && j.deliveryDate) {
+      if (activeSelectedPOs.includes(j.poNo) && j.deliveryDate) {
         dates.add(j.deliveryDate);
       }
     });
@@ -167,7 +241,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
       return daysA - daysB;
     });
     return sortedDates[0];
-  }, [jobs, selectedPOs]);
+  }, [jobs, selectedPOs, shippedPOs]);
 
   const selectedPOsDeliveryRisk = useMemo(() => {
     if (!selectedPOsDeliveryDate) return null;
@@ -190,7 +264,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     >();
 
     jobs.forEach((job) => {
-      if (!job.poNo) return;
+      if (!job.poNo || shippedPOs[job.poNo]) return;
       const current = grouped.get(job.poNo) ?? {
         earliestDate: null,
         earliestDays: Number.POSITIVE_INFINITY,
@@ -239,7 +313,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
       if (priorityDiff !== 0) return priorityDiff;
       return a.daysUntil - b.daysUntil;
     });
-  }, [jobs]);
+  }, [jobs, shippedPOs]);
 
   const deliverySummary = useMemo(() => {
     return {
@@ -277,8 +351,9 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     // Urgency filter (multi - OR logic)
     if (selectedUrgencies.length > 0) {
       result = result.filter(j => {
-        const daysUntil = getDaysUntilDelivery(j.deliveryDate);
-        const bucket = getAgeBucket(daysUntil);
+        const isShipped = Boolean(j.poNo && shippedPOs[j.poNo]);
+        const daysUntil = isShipped ? Number.POSITIVE_INFINITY : getDaysUntilDelivery(j.deliveryDate);
+        const bucket = isShipped ? "normal" : getAgeBucket(daysUntil);
         return selectedUrgencies.includes(bucket);
       });
     }
@@ -312,7 +387,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     }
 
     return result;
-  }, [jobs, selectedPOs, selectedSKUs, selectedLocations, selectedUrgencies, searchQuery, sortColumn, sortDirection]);
+  }, [jobs, selectedPOs, selectedSKUs, selectedLocations, selectedUrgencies, searchQuery, sortColumn, sortDirection, shippedPOs]);
 
   const scopedPORisks = useMemo(() => {
     const visiblePOs = new Set(filteredJobs.map((job) => job.poNo));
@@ -402,6 +477,10 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     if (!selectedPOModal) return [];
     return jobs.filter(j => j.poNo === selectedPOModal);
   }, [jobs, selectedPOModal]);
+  const selectedPOModalIsShipped = useMemo(
+    () => Boolean(selectedPOModal && shippedPOs[selectedPOModal]),
+    [selectedPOModal, shippedPOs]
+  );
 
   const poStats = useMemo(() => {
     if (!poJobs.length) return null;
@@ -421,16 +500,18 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
       if (loc === "Packing") packedPieces += j.batchQty || 0;
     });
 
-    const progress = totalPieces > 0 ? Math.round((packedPieces / totalPieces) * 100) : 0;
+    const effectivePackedPieces = selectedPOModalIsShipped ? totalPieces : packedPieces;
+    const progress = totalPieces > 0 ? Math.round((effectivePackedPieces / totalPieces) * 100) : 0;
 
     return {
       totalJobs: poJobs.length,
       totalPieces,
-      packedPieces,
+      packedPieces: effectivePackedPieces,
       progress,
       locationBreakdown,
+      shippedOverride: selectedPOModalIsShipped,
     };
-  }, [poJobs]);
+  }, [poJobs, selectedPOModalIsShipped]);
 
   // Loading state
   if (loading && jobs.length === 0) {
@@ -460,7 +541,12 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   }
 
   // PO options for multi-select
-  const poOptions = uniquePOs.map(po => ({ value: po, label: `PO ${po}` }));
+  const poOptions = uniquePOs.map((po) => ({
+    value: po,
+    label: shippedPOs[po] ? `PO ${po} (Shipped)` : `PO ${po}`,
+  }));
+  const selectedPOsAllShipped = selectedPOs.length > 0 && selectedPOs.every((po) => Boolean(shippedPOs[po]));
+  const selectedPOsAnyShipped = selectedPOs.some((po) => Boolean(shippedPOs[po]));
 
   return (
     <div className="app-container">
@@ -492,6 +578,12 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
               placeholder="All POs"
               label="PO"
             />
+            {selectedPOsAllShipped && (
+              <div className="delivery-date-display delivery-status-normal">
+                <span className="delivery-label">Status:</span>
+                <span className="delivery-value">Shipped override active</span>
+              </div>
+            )}
             {selectedPOs.length > 0 && selectedPOsDeliveryDate && (
               <div className={`delivery-date-display delivery-status-${selectedPOsDeliveryRisk?.bucket || "normal"}`}>
                 <span className="delivery-label">Delivery:</span>
@@ -500,6 +592,28 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                   <span className="delivery-chip">
                     {formatDueText(selectedPOsDeliveryRisk.daysUntil)}
                   </span>
+                )}
+              </div>
+            )}
+            {selectedPOs.length > 0 && (
+              <div className="selected-po-actions">
+                {!selectedPOsAllShipped && (
+                  <button
+                    type="button"
+                    className="po-bulk-ship-btn"
+                    onClick={markSelectedPOsAsShipped}
+                  >
+                    Ship selected
+                  </button>
+                )}
+                {selectedPOsAnyShipped && (
+                  <button
+                    type="button"
+                    className="po-bulk-ship-btn undo"
+                    onClick={undoSelectedPOsShipped}
+                  >
+                    Undo ship
+                  </button>
                 )}
               </div>
             )}
@@ -563,6 +677,9 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
             <span className="alert-pill alert-urgent">{deliverySummary.urgent} due ≤7d</span>
             <span className="alert-pill alert-soon">{deliverySummary.soon} due 8-14d</span>
             <span className="alert-pill alert-missing">{deliverySummary.missing} no date</span>
+            {shippedPOList.length > 0 && (
+              <span className="alert-pill alert-shipped">{shippedPOList.length} shipped override</span>
+            )}
             {highestRiskPO && (
               <button
                 className="deadline-focus-btn"
@@ -606,6 +723,20 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
               <div className="po-deadline-meta">
                 {risk.jobCount} jobs | {risk.pieceCount.toLocaleString()} pcs
               </div>
+              {!shippedPOs[risk.poNo] && (
+                <div className="po-deadline-actions">
+                  <button
+                    type="button"
+                    className="po-deadline-ship-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      markPOAsShipped(risk.poNo);
+                    }}
+                  >
+                    Ship
+                  </button>
+                </div>
+              )}
             </button>
           ))}
         </div>
@@ -730,9 +861,10 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                     .filter(j => j.normalizedLocation === loc)
                     .map(job => (
                       (() => {
-                        const hasDate = Boolean(job.deliveryDate);
+                        const isShipped = Boolean(job.poNo && shippedPOs[job.poNo]);
+                        const hasDate = !isShipped && Boolean(job.deliveryDate);
                         const daysUntil = hasDate ? getDaysUntilDelivery(job.deliveryDate) : Number.POSITIVE_INFINITY;
-                        const bucket: PORiskBucket = hasDate ? getAgeBucket(daysUntil) : "missing";
+                        const bucket: PORiskBucket = isShipped ? "normal" : hasDate ? getAgeBucket(daysUntil) : "missing";
                         return (
                       <div
                         key={job.jobNo}
@@ -752,7 +884,11 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                         </div>
                         <div className="kanban-card-delivery">
                           <span className={`delivery-pill delivery-${bucket}`}>
-                            {hasDate ? `${job.deliveryDate} • ${formatDueText(daysUntil)}` : "No delivery date"}
+                            {isShipped
+                              ? "Shipped override"
+                              : hasDate
+                                ? `${job.deliveryDate} • ${formatDueText(daysUntil)}`
+                                : "No delivery date"}
                           </span>
                         </div>
                       </div>
@@ -811,9 +947,10 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
               </thead>
               <tbody>
                 {filteredJobs.map(job => {
-                  const hasDate = Boolean(job.deliveryDate);
+                  const isShipped = Boolean(job.poNo && shippedPOs[job.poNo]);
+                  const hasDate = !isShipped && Boolean(job.deliveryDate);
                   const daysUntil = hasDate ? getDaysUntilDelivery(job.deliveryDate) : Number.POSITIVE_INFINITY;
-                  const bucket: PORiskBucket = hasDate ? getAgeBucket(daysUntil) : "missing";
+                  const bucket: PORiskBucket = isShipped ? "normal" : hasDate ? getAgeBucket(daysUntil) : "missing";
                   return (
                   <tr
                     key={job.jobNo}
@@ -850,7 +987,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                       <div className="delivery-cell">
                         <span>{job.deliveryDate || "—"}</span>
                         <span className={`delivery-pill delivery-${bucket}`}>
-                          {hasDate ? formatDueText(daysUntil) : "No date"}
+                          {isShipped ? "Shipped override" : hasDate ? formatDueText(daysUntil) : "No date"}
                         </span>
                       </div>
                     </td>
@@ -954,12 +1091,39 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
         <div className="modal-overlay" onClick={() => setSelectedPOModal(null)}>
           <div className="modal po-analytics-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>PO {selectedPOModal} Analytics</h2>
-              <button className="modal-close" onClick={() => setSelectedPOModal(null)}>
-                &times;
-              </button>
+              <h2>
+                PO {selectedPOModal} Analytics
+                {selectedPOModalIsShipped && <span className="po-shipped-badge">Shipped</span>}
+              </h2>
+              <div className="po-modal-actions">
+                {selectedPOModalIsShipped ? (
+                  <button
+                    type="button"
+                    className="po-ship-toggle-btn is-shipped"
+                    onClick={() => undoPOShipped(selectedPOModal)}
+                  >
+                    Undo Shipped
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="po-ship-toggle-btn"
+                    onClick={() => markPOAsShipped(selectedPOModal)}
+                  >
+                    Mark as Shipped
+                  </button>
+                )}
+                <button className="modal-close" onClick={() => setSelectedPOModal(null)}>
+                  &times;
+                </button>
+              </div>
             </div>
             <div className="modal-content">
+              {poStats.shippedOverride && (
+                <div className="po-shipped-note">
+                  Shipped override is active. This PO is excluded from delivery risk alerts.
+                </div>
+              )}
               {/* Summary Stats */}
               <div className="po-summary">
                 <div className="summary-stat">
