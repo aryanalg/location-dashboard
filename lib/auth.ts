@@ -1,10 +1,23 @@
 import { NextAuthOptions } from "next-auth";
+import { JWT } from "next-auth/jwt";
 import AzureADProvider from "next-auth/providers/azure-ad";
 import { getEnv } from "./env";
 
+interface RefreshedTokenResponse {
+  access_token?: string;
+  expires_in?: number;
+  refresh_token?: string;
+  error_description?: string;
+}
+
 // Token refresh function
-async function refreshAccessToken(token: any) {
+async function refreshAccessToken(token: JWT): Promise<JWT> {
   try {
+    const refreshToken = token.refreshToken;
+    if (!refreshToken) {
+      throw new Error("Missing refresh token");
+    }
+
     const env = getEnv();
     const url = `https://login.microsoftonline.com/${env.AZURE_AD_TENANT_ID}/oauth2/v2.0/token`;
 
@@ -17,14 +30,14 @@ async function refreshAccessToken(token: any) {
         client_id: env.AZURE_AD_CLIENT_ID,
         client_secret: env.AZURE_AD_CLIENT_SECRET,
         grant_type: "refresh_token",
-        refresh_token: token.refreshToken,
+        refresh_token: refreshToken,
         scope: "openid profile email Files.Read.All Sites.Read.All offline_access",
       }),
     });
 
-    const refreshedTokens = await response.json();
+    const refreshedTokens = (await response.json()) as RefreshedTokenResponse;
 
-    if (!response.ok) {
+    if (!response.ok || !refreshedTokens.access_token || !refreshedTokens.expires_in) {
       throw new Error(refreshedTokens.error_description || "Failed to refresh token");
     }
 
@@ -72,7 +85,7 @@ export const authOptions: NextAuthOptions = {
       }
 
       // Return token if it's still valid (with 5 minute buffer)
-      const expiresAt = token.expiresAt as number;
+      const expiresAt = token.expiresAt;
       if (expiresAt && Date.now() < expiresAt * 1000 - 5 * 60 * 1000) {
         return token;
       }
@@ -108,7 +121,7 @@ export const authOptions: NextAuthOptions = {
 };
 
 // Helper function to get access token from JWT (server-side only)
-export async function getAccessTokenFromToken(token: any): Promise<string | null> {
+export async function getAccessTokenFromToken(token: JWT | null | undefined): Promise<string | null> {
   if (token?.error) {
     return null;
   }

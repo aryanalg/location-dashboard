@@ -1,5 +1,52 @@
 import { Client } from "@microsoft/microsoft-graph-client";
 import { Job, normalizeLocation } from "./types";
+import {
+  decideWorksheetByName,
+  findHeaderRowIndex,
+  getSheetHeaderSet,
+  getWorksheetSelectionConfigFromEnv,
+  hasRequiredSheetHeaders,
+} from "./worksheet-selection";
+
+interface GraphSite {
+  id?: string;
+}
+
+interface GraphDrive {
+  id: string;
+  name: string;
+}
+
+interface GraphDrivesResponse {
+  value?: GraphDrive[];
+}
+
+interface GraphWorksheet {
+  id: string;
+  name: string;
+}
+
+interface GraphWorksheetsResponse {
+  value?: GraphWorksheet[];
+}
+
+interface GraphFileInfo {
+  id: string;
+  name?: string;
+  lastModifiedDateTime?: string;
+}
+
+interface GraphSession {
+  id?: string;
+}
+
+interface GraphRangeResponse {
+  values?: unknown[][];
+}
+
+function shouldLogImportDiagnostics(): boolean {
+  return process.env.NODE_ENV === "development" || process.env.EXCEL_IMPORT_LOG === "true";
+}
 
 // Create an authenticated Graph client
 export function getGraphClient(accessToken: string) {
@@ -32,24 +79,24 @@ const COLUMN_MAP: Record<string, keyof Job> = {
 };
 
 // Safe value extractors
-function safeString(value: any): string {
+function safeString(value: unknown): string {
   if (value === null || value === undefined || value === '') return '';
   return String(value).trim();
 }
 
-function safeInt(value: any): number {
+function safeInt(value: unknown): number {
   if (value === null || value === undefined || value === '') return 0;
-  const num = parseFloat(value);
+  const num = Number.parseFloat(String(value));
   return isNaN(num) ? 0 : Math.floor(num);
 }
 
-function safeFloat(value: any): number | null {
+function safeFloat(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
-  const num = parseFloat(value);
+  const num = Number.parseFloat(String(value));
   return isNaN(num) ? null : Math.round(num * 100) / 100;
 }
 
-function formatDate(value: any): string {
+function formatDate(value: unknown): string {
   if (value === null || value === undefined || value === '') return '';
 
   // Excel dates might come as serial numbers
@@ -77,7 +124,7 @@ function formatDate(value: any): string {
 }
 
 // Format date as dd/mm/yyyy (e.g., 6/2/2026 for 6th February 2026)
-function formatDateDMY(value: any): string {
+function formatDateDMY(value: unknown): string {
   if (value === null || value === undefined || value === '') return '';
 
   // Excel dates come as serial numbers when stored as actual Date values
@@ -117,32 +164,20 @@ function formatDateDMY(value: any): string {
   return str;
 }
 
-// Check if a sheet name looks like a PO sheet
-function isPOSheet(sheetName: string): boolean {
-  // Known PO patterns
-  const knownPOs = ['40413', '41393', '42147', '43015'];
-  if (knownPOs.some(po => sheetName.includes(po))) {
-    return true;
-  }
-
-  // Check if sheet name starts with 4-5 digits (PO number pattern)
-  const match = sheetName.match(/^(\d{4,5})/);
-  return match !== null;
-}
-
 // Parse a worksheet's data into Job objects
 function parseWorksheetData(
-  values: any[][],
-  sheetName: string
+  values: unknown[][],
+  sheetName: string,
+  headerRowIndex: number
 ): Job[] {
-  if (!values || values.length < 2) return [];
+  if (!values || values.length <= headerRowIndex + 1) return [];
 
   const jobs: Job[] = [];
-  const headers = values[0];
+  const headers = values[headerRowIndex];
 
   // Build column index map
   const colIndex: Record<string, number> = {};
-  headers.forEach((header: any, idx: number) => {
+  headers.forEach((header, idx) => {
     const headerStr = safeString(header);
     if (headerStr && COLUMN_MAP[headerStr]) {
       colIndex[COLUMN_MAP[headerStr]] = idx;
@@ -150,19 +185,21 @@ function parseWorksheetData(
   });
 
   // Debug: log if deliveryDate column was found (once per sheet)
-  if (!colIndex['deliveryDate']) {
-    console.log(`Sheet ${sheetName}: deliveryDate column NOT found. Headers: ${headers.slice(0, 15).map((h: any) => safeString(h)).join(', ')}`);
+  if (shouldLogImportDiagnostics() && colIndex['deliveryDate'] === undefined) {
+    console.log(`Sheet ${sheetName}: deliveryDate column NOT found. Headers: ${headers.slice(0, 15).map((h) => safeString(h)).join(', ')}`);
   }
 
   // Process data rows
-  for (let i = 1; i < values.length; i++) {
+  for (let i = headerRowIndex + 1; i < values.length; i++) {
     const row = values[i];
+    if (!Array.isArray(row)) continue;
 
     // Get job number
     const jobNo = safeString(row[colIndex['jobNo']]);
+    const normalizedJobNo = jobNo.toUpperCase();
 
     // Skip empty rows or rows that don't start with 'SO'
-    if (!jobNo || !jobNo.startsWith('SO')) continue;
+    if (!jobNo || !normalizedJobNo.startsWith('SO')) continue;
 
     // Extract PO number
     let poNo = safeString(row[colIndex['poNo']]).replace('.0', '');
@@ -221,25 +258,28 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
   // First, get the site ID
   const siteResponse = await client
     .api(`/sites/${hostname}:${sitePath}`)
-    .get();
+    .get() as GraphSite;
 
   const siteId = siteResponse.id;
+  if (!siteId) {
+    throw new Error("Failed to resolve SharePoint site ID.");
+  }
 
   // Get all drives and find the one we need
-  const drivesResponse = await client.api(`/sites/${siteId}/drives`).get();
+  const drivesResponse = await client.api(`/sites/${siteId}/drives`).get() as GraphDrivesResponse;
   const drives = drivesResponse.value || [];
 
   // Find the target drive by name
-  const targetDrive = drives.find((d: any) => d.name === driveName);
+  const targetDrive = drives.find((d) => d.name === driveName);
   if (!targetDrive) {
-    throw new Error(`Drive "${driveName}" not found. Available drives: ${drives.map((d: any) => d.name).join(', ')}`);
+    throw new Error(`Drive "${driveName}" not found. Available drives: ${drives.map((d) => d.name).join(', ')}`);
   }
   try {
     // Get file info using direct path
     const itemPath = `/sites/${siteId}/drives/${targetDrive.id}/root:${filePath}`;
-    const fileInfo = await client.api(itemPath).get();
+    const fileInfo = await client.api(itemPath).get() as GraphFileInfo;
     // Debug log only in development
-    if (process.env.NODE_ENV === "development") {
+    if (shouldLogImportDiagnostics()) {
       console.log(`Reading: ${fileInfo.name} (modified: ${fileInfo.lastModifiedDateTime})`);
     }
 
@@ -251,8 +291,8 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
     try {
       const sessionResponse = await client
         .api(`${workbookPath}/createSession`)
-        .post({ persistChanges: false });
-      sessionId = sessionResponse.id;
+        .post({ persistChanges: false }) as GraphSession;
+      sessionId = sessionResponse.id ?? null;
     } catch {
       // Continue without session
     }
@@ -266,15 +306,21 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
     const worksheetsResponse = await client
       .api(`${workbookPath}/worksheets`)
       .headers(requestHeaders)
-      .get();
+      .get() as GraphWorksheetsResponse;
 
     const worksheets = worksheetsResponse.value || [];
 
-    // Process each PO sheet
+    const worksheetSelectionConfig = getWorksheetSelectionConfigFromEnv();
+    const includedSheets: string[] = [];
+    const skippedSheets: string[] = [];
+
+    // Process each worksheet
     for (const sheet of worksheets) {
       const sheetName = sheet.name;
+      const nameDecision = decideWorksheetByName(sheetName, worksheetSelectionConfig);
 
-      if (!isPOSheet(sheetName)) {
+      if (!nameDecision.shouldProcess) {
+        skippedSheets.push(`${sheetName} (${nameDecision.reason})`);
         continue;
       }
 
@@ -283,19 +329,42 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
         const rangeResponse = await client
           .api(`${workbookPath}/worksheets/${sheet.id}/usedRange`)
           .headers(requestHeaders)
-          .get();
+          .get() as GraphRangeResponse;
 
-        const values = rangeResponse.values;
-        const jobs = parseWorksheetData(values, sheetName);
+        const values = Array.isArray(rangeResponse.values) ? rangeResponse.values : [];
+        const headerRowIndex = findHeaderRowIndex(values);
+        const headers = headerRowIndex >= 0 ? getSheetHeaderSet([values[headerRowIndex]]) : new Set<string>();
+
+        if (headerRowIndex < 0 || !hasRequiredSheetHeaders(headers)) {
+          const foundHeadersPreview = Array.from(headers).slice(0, 10).join(', ') || 'none';
+          skippedSheets.push(
+            `${sheetName} (missing required headers in top rows: need Job No + Location + one of [Batch Qty, Total Qty]; found: ${foundHeadersPreview})`
+          );
+          continue;
+        }
+
+        const jobs = parseWorksheetData(values, sheetName, headerRowIndex);
+        if (jobs.length === 0) {
+          skippedSheets.push(`${sheetName} (no valid SO job rows after parsing)`);
+          continue;
+        }
+
         allJobs.push(...jobs);
+        includedSheets.push(`${sheetName} (${jobs.length} jobs; ${nameDecision.reason})`);
 
       } catch (sheetError) {
         // Log sheet errors in development only
-        if (process.env.NODE_ENV === "development") {
+        if (shouldLogImportDiagnostics()) {
           console.error(`Error reading sheet ${sheetName}:`, sheetError);
         }
+        skippedSheets.push(`${sheetName} (read error)`);
         // Continue with other sheets
       }
+    }
+
+    if (shouldLogImportDiagnostics()) {
+      console.log(`[Excel] Included sheets (${includedSheets.length}/${worksheets.length}): ${includedSheets.join('; ') || 'none'}`);
+      console.log(`[Excel] Skipped sheets (${skippedSheets.length}/${worksheets.length}): ${skippedSheets.join('; ') || 'none'}`);
     }
 
     // Close the session to free resources
@@ -311,7 +380,7 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
 
   } catch (error) {
     // Log in development only - production errors are logged at API level
-    if (process.env.NODE_ENV === "development") {
+    if (shouldLogImportDiagnostics()) {
       console.error('Error fetching Excel data:', error);
     }
     throw error;

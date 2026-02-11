@@ -30,3 +30,6 @@ Excel Cloud File (Source of Truth)
 
 ## Open Questions
 See [DATA_REQUIREMENTS.md](./DATA_REQUIREMENTS.md)
+
+## Implemented Rules
+See [WORKSHEET_SELECTION.md](./WORKSHEET_SELECTION.md)

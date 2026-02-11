@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import Image from "next/image";
+import type { Session } from "next-auth";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Job,
   LOCATION_ORDER,
@@ -15,11 +17,24 @@ import AnalyticsPanel from "./AnalyticsPanel";
 import MultiSelect from "./MultiSelect";
 
 interface DashboardProps {
-  user: any;
+  user: Session["user"] | undefined;
   onSignOut: () => void;
 }
 
+type QueryResult = ReturnType<typeof processQuery>;
+
+const NUMERIC_SORT_COLUMNS: (keyof Job)[] = [
+  "batchQty",
+  "totalQty",
+  "weightCasting",
+  "weightPolishing",
+  "weightPlating",
+  "accWt",
+];
+
 export default function Dashboard({ user, onSignOut }: DashboardProps) {
+  const hasLoadedOnce = useRef(false);
+
   // Data state
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,14 +69,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
 
   // Query assistant state
   const [queryInput, setQueryInput] = useState("");
-  const [queryResult, setQueryResult] = useState<any>(null);
+  const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
   const [showQueryHelp, setShowQueryHelp] = useState(false);
 
   // Fetch data
   const fetchData = useCallback(async (isManual = false) => {
     try {
       // Use refreshing state for background/manual refreshes, loading for initial
-      if (jobs.length > 0) {
+      if (isManual || hasLoadedOnce.current) {
         setRefreshing(true);
       } else {
         setLoading(true);
@@ -80,15 +95,16 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch data");
     } finally {
+      hasLoadedOnce.current = true;
       setLoading(false);
       setRefreshing(false);
     }
-  }, [jobs.length]);
+  }, []);
 
   // Initial load
   useEffect(() => {
-    fetchData();
-  }, []);
+    void fetchData();
+  }, [fetchData]);
 
   // Auto-refresh every 30 seconds
   useEffect(() => {
@@ -100,10 +116,6 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   // Computed values
   const uniquePOs = useMemo(() => [...new Set(jobs.map(j => j.poNo).filter(Boolean))].sort(), [jobs]);
   const uniqueSKUs = useMemo(() => [...new Set(jobs.map(j => j.sku).filter(Boolean))].sort(), [jobs]);
-  const uniqueLocations = useMemo(() =>
-    LOCATION_ORDER.filter(loc => jobs.some(j => j.normalizedLocation === loc)),
-    [jobs]
-  );
 
   // Get delivery date for selected POs
   const selectedPOsDeliveryDate = useMemo(() => {
@@ -164,15 +176,15 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     // Apply sort
     if (sortColumn) {
       result.sort((a, b) => {
-        let aVal: any = a[sortColumn];
-        let bVal: any = b[sortColumn];
+        let aVal: string | number = a[sortColumn] ?? "";
+        let bVal: string | number = b[sortColumn] ?? "";
 
-        if (aVal === null || aVal === undefined) aVal = "";
-        if (bVal === null || bVal === undefined) bVal = "";
-
-        if (["batchQty", "totalQty", "weightCasting", "weightPolishing", "weightPlating", "accWt"].includes(sortColumn)) {
-          aVal = parseFloat(aVal) || 0;
-          bVal = parseFloat(bVal) || 0;
+        if (NUMERIC_SORT_COLUMNS.includes(sortColumn)) {
+          aVal = Number(aVal) || 0;
+          bVal = Number(bVal) || 0;
+        } else {
+          aVal = String(aVal).toLowerCase();
+          bVal = String(bVal).toLowerCase();
         }
 
         if (aVal < bVal) return sortDirection === "asc" ? -1 : 1;
@@ -330,7 +342,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
       {/* Header */}
       <header className="top-bar">
         <div className="logo-section">
-          <img src="/nxt-logo.png" alt="NXT" className="logo-icon" />
+          <Image
+            src="/nxt-logo.png"
+            alt="NXT"
+            className="logo-icon"
+            width={120}
+            height={40}
+            priority
+          />
           <span className="logo-separator" />
           <div className="logo-text">
             <h1>Location Dashboard</h1>

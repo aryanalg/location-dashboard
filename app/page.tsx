@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useSession, signIn, signOut } from "next-auth/react";
 import Dashboard from "@/components/Dashboard";
 
@@ -26,7 +27,14 @@ export default function Home() {
       <div className="signin-container">
         <div className="signin-card">
           <div className="signin-logo">
-            <img src="/nxt-logo.png" alt="NXT" className="signin-logo-img" />
+            <Image
+              src="/nxt-logo.png"
+              alt="NXT"
+              className="signin-logo-img"
+              width={120}
+              height={40}
+              priority
+            />
             <h1>Location Dashboard</h1>
             <p>Job Cart Tracker - Next Manufacturing</p>
           </div>
@@ -53,7 +61,14 @@ export default function Home() {
       <div className="signin-container">
         <div className="signin-card">
           <div className="signin-logo">
-            <img src="/nxt-logo.png" alt="NXT" className="signin-logo-img" />
+            <Image
+              src="/nxt-logo.png"
+              alt="NXT"
+              className="signin-logo-img"
+              width={120}
+              height={40}
+              priority
+            />
             <h1>Location Dashboard</h1>
             <p>Session Expired</p>
           </div>

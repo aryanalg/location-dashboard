@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
     const rateLimitKey = token?.email || ip;
 
     // Check rate limit
-    const rateLimitResult = apiRateLimiter.check(rateLimitKey);
+    const rateLimitResult = await apiRateLimiter.check(rateLimitKey);
     if (!rateLimitResult.allowed) {
       return NextResponse.json(
         {

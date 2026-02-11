@@ -82,7 +82,6 @@ export default function AnalyticsPanel({
   // Calculate pie chart data
   const pieData = useMemo(() => {
     const data: { location: string; value: number; percent: number; color: string }[] = [];
-    let cumulative = 0;
 
     locationsWithData.forEach(loc => {
       const count = locationCounts[loc];
