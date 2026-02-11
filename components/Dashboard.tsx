@@ -22,6 +22,16 @@ interface DashboardProps {
 }
 
 type QueryResult = ReturnType<typeof processQuery>;
+type PORiskBucket = AgeBucket | "missing";
+
+interface PORisk {
+  poNo: string;
+  dueDate: string | null;
+  daysUntil: number;
+  bucket: PORiskBucket;
+  jobCount: number;
+  pieceCount: number;
+}
 
 const NUMERIC_SORT_COLUMNS: (keyof Job)[] = [
   "batchQty",
@@ -31,6 +41,28 @@ const NUMERIC_SORT_COLUMNS: (keyof Job)[] = [
   "weightPlating",
   "accWt",
 ];
+
+function formatDueText(daysUntil: number): string {
+  if (daysUntil < 0) return `${Math.abs(daysUntil)}d late`;
+  if (daysUntil === 0) return "Due today";
+  if (daysUntil === 1) return "1d left";
+  return `${daysUntil}d left`;
+}
+
+function getBucketPriority(bucket: PORiskBucket): number {
+  switch (bucket) {
+    case "overdue":
+      return 0;
+    case "urgent":
+      return 1;
+    case "soon":
+      return 2;
+    case "missing":
+      return 3;
+    default:
+      return 4;
+  }
+}
 
 export default function Dashboard({ user, onSignOut }: DashboardProps) {
   const hasLoadedOnce = useRef(false);
@@ -137,6 +169,92 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     return sortedDates[0];
   }, [jobs, selectedPOs]);
 
+  const selectedPOsDeliveryRisk = useMemo(() => {
+    if (!selectedPOsDeliveryDate) return null;
+    const daysUntil = getDaysUntilDelivery(selectedPOsDeliveryDate);
+    return {
+      daysUntil,
+      bucket: getAgeBucket(daysUntil),
+    };
+  }, [selectedPOsDeliveryDate]);
+
+  const poRisks = useMemo(() => {
+    const grouped = new Map<
+      string,
+      {
+        earliestDate: string | null;
+        earliestDays: number;
+        jobCount: number;
+        pieceCount: number;
+      }
+    >();
+
+    jobs.forEach((job) => {
+      if (!job.poNo) return;
+      const current = grouped.get(job.poNo) ?? {
+        earliestDate: null,
+        earliestDays: Number.POSITIVE_INFINITY,
+        jobCount: 0,
+        pieceCount: 0,
+      };
+
+      current.jobCount += 1;
+      current.pieceCount += job.batchQty || 0;
+
+      if (job.deliveryDate) {
+        const daysUntil = getDaysUntilDelivery(job.deliveryDate);
+        if (Number.isFinite(daysUntil) && daysUntil < current.earliestDays) {
+          current.earliestDays = daysUntil;
+          current.earliestDate = job.deliveryDate;
+        }
+      }
+
+      grouped.set(job.poNo, current);
+    });
+
+    const risks: PORisk[] = Array.from(grouped.entries()).map(([poNo, data]) => {
+      if (!data.earliestDate) {
+        return {
+          poNo,
+          dueDate: null,
+          daysUntil: Number.POSITIVE_INFINITY,
+          bucket: "missing",
+          jobCount: data.jobCount,
+          pieceCount: data.pieceCount,
+        };
+      }
+
+      return {
+        poNo,
+        dueDate: data.earliestDate,
+        daysUntil: data.earliestDays,
+        bucket: getAgeBucket(data.earliestDays),
+        jobCount: data.jobCount,
+        pieceCount: data.pieceCount,
+      };
+    });
+
+    return risks.sort((a, b) => {
+      const priorityDiff = getBucketPriority(a.bucket) - getBucketPriority(b.bucket);
+      if (priorityDiff !== 0) return priorityDiff;
+      return a.daysUntil - b.daysUntil;
+    });
+  }, [jobs]);
+
+  const deliverySummary = useMemo(() => {
+    return {
+      overdue: poRisks.filter((po) => po.bucket === "overdue").length,
+      urgent: poRisks.filter((po) => po.bucket === "urgent").length,
+      soon: poRisks.filter((po) => po.bucket === "soon").length,
+      missing: poRisks.filter((po) => po.bucket === "missing").length,
+    };
+  }, [poRisks]);
+
+  const highestRiskPO = useMemo(
+    () => poRisks.find((po) => po.bucket !== "normal"),
+    [poRisks]
+  );
+
   // Filtered and sorted data (multi-select filters)
   const filteredJobs = useMemo(() => {
     let result = [...jobs];
@@ -195,6 +313,13 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
 
     return result;
   }, [jobs, selectedPOs, selectedSKUs, selectedLocations, selectedUrgencies, searchQuery, sortColumn, sortDirection]);
+
+  const scopedPORisks = useMemo(() => {
+    const visiblePOs = new Set(filteredJobs.map((job) => job.poNo));
+    const visibleRisks = poRisks.filter((risk) => visiblePOs.has(risk.poNo));
+    const prioritized = visibleRisks.filter((risk) => risk.bucket !== "normal");
+    return (prioritized.length > 0 ? prioritized : visibleRisks).slice(0, 10);
+  }, [filteredJobs, poRisks]);
 
   // Location counts
   const locationCounts = useMemo(() => {
@@ -368,9 +493,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
               label="PO"
             />
             {selectedPOs.length > 0 && selectedPOsDeliveryDate && (
-              <div className="delivery-date-display">
+              <div className={`delivery-date-display delivery-status-${selectedPOsDeliveryRisk?.bucket || "normal"}`}>
                 <span className="delivery-label">Delivery:</span>
                 <span className="delivery-value">{selectedPOsDeliveryDate}</span>
+                {selectedPOsDeliveryRisk && (
+                  <span className="delivery-chip">
+                    {formatDueText(selectedPOsDeliveryRisk.daysUntil)}
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -424,6 +554,62 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
           </div>
         </div>
       </header>
+
+      {(deliverySummary.overdue > 0 || deliverySummary.urgent > 0 || deliverySummary.soon > 0 || deliverySummary.missing > 0) && (
+        <section className="deadline-alert-strip" role="alert" aria-live="polite">
+          <div className="deadline-alert-title">Delivery Risk Alert</div>
+          <div className="deadline-alert-metrics">
+            <span className="alert-pill alert-overdue">{deliverySummary.overdue} overdue</span>
+            <span className="alert-pill alert-urgent">{deliverySummary.urgent} due ≤7d</span>
+            <span className="alert-pill alert-soon">{deliverySummary.soon} due 8-14d</span>
+            <span className="alert-pill alert-missing">{deliverySummary.missing} no date</span>
+            {highestRiskPO && (
+              <button
+                className="deadline-focus-btn"
+                onClick={() => setSelectedPOModals([highestRiskPO.poNo])}
+              >
+                Focus PO {highestRiskPO.poNo}
+              </button>
+            )}
+          </div>
+        </section>
+      )}
+
+      <section className="po-deadline-section">
+        <div className="po-deadline-header">
+          <h2>PO Delivery Radar</h2>
+          <span>
+            {scopedPORisks.length > 0
+              ? "Most time-sensitive POs in current view"
+              : "No delivery-risk data in current view"}
+          </span>
+        </div>
+        <div className="po-deadline-grid">
+          {scopedPORisks.length === 0 && (
+            <div className="po-deadline-empty">No POs with delivery-date risk signals in this filter.</div>
+          )}
+          {scopedPORisks.map((risk) => (
+            <button
+              key={risk.poNo}
+              className={`po-deadline-card bucket-${risk.bucket}`}
+              onClick={() => setSelectedPOModals([risk.poNo])}
+            >
+              <div className="po-deadline-top">
+                <span className="po-deadline-po">PO {risk.poNo}</span>
+                <span className={`delivery-pill delivery-${risk.bucket}`}>
+                  {risk.bucket === "missing" ? "No date" : formatDueText(risk.daysUntil)}
+                </span>
+              </div>
+              <div className="po-deadline-date">
+                {risk.dueDate ? `Earliest due: ${risk.dueDate}` : "Earliest due: —"}
+              </div>
+              <div className="po-deadline-meta">
+                {risk.jobCount} jobs | {risk.pieceCount.toLocaleString()} pcs
+              </div>
+            </button>
+          ))}
+        </div>
+      </section>
 
       {/* KPI Cards */}
       <section className="kpi-section">
@@ -543,9 +729,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                   {filteredJobs
                     .filter(j => j.normalizedLocation === loc)
                     .map(job => (
+                      (() => {
+                        const hasDate = Boolean(job.deliveryDate);
+                        const daysUntil = hasDate ? getDaysUntilDelivery(job.deliveryDate) : Number.POSITIVE_INFINITY;
+                        const bucket: PORiskBucket = hasDate ? getAgeBucket(daysUntil) : "missing";
+                        return (
                       <div
                         key={job.jobNo}
-                        className="kanban-card"
+                        className={`kanban-card bucket-${bucket}`}
                         onClick={() => setSelectedJob(job)}
                       >
                         <div className="kanban-card-header">
@@ -559,7 +750,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                             {job.poNo}
                           </span>
                         </div>
+                        <div className="kanban-card-delivery">
+                          <span className={`delivery-pill delivery-${bucket}`}>
+                            {hasDate ? `${job.deliveryDate} • ${formatDueText(daysUntil)}` : "No delivery date"}
+                          </span>
+                        </div>
                       </div>
+                      );
+                    })()
                     ))}
                 </div>
               </div>
@@ -612,10 +810,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                 </tr>
               </thead>
               <tbody>
-                {filteredJobs.map(job => (
+                {filteredJobs.map(job => {
+                  const hasDate = Boolean(job.deliveryDate);
+                  const daysUntil = hasDate ? getDaysUntilDelivery(job.deliveryDate) : Number.POSITIVE_INFINITY;
+                  const bucket: PORiskBucket = hasDate ? getAgeBucket(daysUntil) : "missing";
+                  return (
                   <tr
                     key={job.jobNo}
-                    className={selectedJobIds.includes(job.jobNo) ? "selected" : ""}
+                    className={`${selectedJobIds.includes(job.jobNo) ? "selected" : ""} row-${bucket}`.trim()}
                     onClick={() => setSelectedJob(job)}
                   >
                     <td className="checkbox-col" onClick={(e) => e.stopPropagation()}>
@@ -644,9 +846,17 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                         {job.normalizedLocation}
                       </span>
                     </td>
-                    <td>{job.deliveryDate || "—"}</td>
+                    <td>
+                      <div className="delivery-cell">
+                        <span>{job.deliveryDate || "—"}</span>
+                        <span className={`delivery-pill delivery-${bucket}`}>
+                          {hasDate ? formatDueText(daysUntil) : "No date"}
+                        </span>
+                      </div>
+                    </td>
                   </tr>
-                ))}
+                );
+                })}
               </tbody>
             </table>
           </div>
