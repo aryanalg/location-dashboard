@@ -120,6 +120,18 @@ export type DisplayMode = 'jobs' | 'pieces';
 // Urgency buckets based on delivery deadline
 export type AgeBucket = 'overdue' | 'urgent' | 'soon' | 'normal';
 
+function buildValidDate(year: number, monthZeroBased: number, day: number): Date | null {
+  const date = new Date(year, monthZeroBased, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== monthZeroBased ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
 // Calculate days until delivery date
 // Returns negative number if overdue
 export function getDaysUntilDelivery(deliveryDate: string): number {
@@ -135,7 +147,14 @@ export function getDaysUntilDelivery(deliveryDate: string): number {
 
   if (isNaN(day) || isNaN(month) || isNaN(year)) return Infinity;
 
-  const deliveryDateObj = new Date(year, month, day);
+  // Primary parse: DD/MM/YYYY.
+  let deliveryDateObj = buildValidDate(year, month, day);
+  if (!deliveryDateObj) {
+    // Fallback parse: MM/DD/YYYY.
+    deliveryDateObj = buildValidDate(year, day - 1, month + 1);
+  }
+  if (!deliveryDateObj) return Infinity;
+
   const today = new Date();
   today.setHours(0, 0, 0, 0); // Reset time to start of day
 
