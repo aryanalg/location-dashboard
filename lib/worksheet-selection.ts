@@ -4,6 +4,8 @@ const REQUIRED_HEADERS_NORMALIZED = REQUIRED_SHEET_HEADERS.map((header) => norma
 const REQUIRED_HEADERS_ANY_OF_NORMALIZED = REQUIRED_SHEET_HEADERS_ANY_OF.map((header) => normalizeHeader(header));
 const ALWAYS_INCLUDED_SHEET_NAMES = new Set(["samples"]);
 const DEFAULT_PO_SHEET_REGEX = /^C[A-Z0-9]+-[A-Z0-9]+$/i;
+const CUSTOMER_SHEET_REGEX = /^C[A-Z0-9]+$/i;
+const CUSTOMER_LEGACY_PO_SHEET_REGEX = /^C[A-Z0-9]+-\d{5}(?:\s*\([^)]*\))?$/i;
 const LEGACY_PO_SHEET_REGEX = /^\d{5}(?:\s*\([^)]*\))?$/;
 
 const NON_DATA_SHEET_PATTERNS = [
@@ -152,6 +154,14 @@ export function decideWorksheetByName(
 
   if (config.poSheetRegex.test(sheetName.trim())) {
     return { shouldProcess: true, reason: "matched PO naming pattern" };
+  }
+
+  if (CUSTOMER_LEGACY_PO_SHEET_REGEX.test(sheetName.trim())) {
+    return { shouldProcess: true, reason: "matched customer legacy PO naming pattern" };
+  }
+
+  if (CUSTOMER_SHEET_REGEX.test(sheetName.trim())) {
+    return { shouldProcess: true, reason: "matched customer naming pattern" };
   }
 
   if (config.allowLegacyPOSheets && LEGACY_PO_SHEET_REGEX.test(sheetName.trim())) {

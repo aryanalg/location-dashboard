@@ -76,8 +76,15 @@ By default, the importer only considers worksheets that match your current busin
 
 1. `Samples` tab (always included).
 2. PO tabs in `CUSTOMER-PO` format, e.g. `C0640-40413` or `C0553F-VPO12`.
-3. Then validates structure: headers must include `Job No`, `Location`, and one of `Batch Qty`/`Total Qty`.
-4. Then validates data: at least one row with `Job No` starting with `SO`.
+3. Customer-level tabs in `CUSTOMER` format, e.g. `C0553F`.
+4. Then validates structure: headers must include `Job No`, `Location`, and one of `Batch Qty`/`Total Qty`.
+5. Then validates data: at least one row with `Job No` starting with `SO`.
+
+PO assignment priority per row:
+
+1. `PO No` column (or aliases like `External Document No`)
+2. Sheet naming rule fallback (`C0640-40413` -> `40413`, `C0553F` -> `C0553F`)
+3. `SOxxxxx` job-number fallback
 
 Migration support:
 

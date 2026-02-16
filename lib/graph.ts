@@ -174,6 +174,21 @@ async function resolveWorkbookFileInfo(
       .get() as GraphDriveItemsResponse;
     const items = searchResponse.value || [];
     if (items.length > 0) {
+      const exactNameMatches = items.filter(
+        (item) => (item.name || "").toLowerCase() === fileName.toLowerCase()
+      );
+      if (exactNameMatches.length === 0) {
+        const similar = items
+          .map((item) => item.name)
+          .filter((name): name is string => Boolean(name))
+          .slice(0, 5)
+          .join(", ");
+        throw new Error(
+          `File not found in SharePoint drive "${driveName}". Checked path "${configuredFilePath}". ` +
+          `Found similar file names: ${similar || "none"}.`
+        );
+      }
+
       const targetFolderPath = normalizeGraphPath(configuredFilePath)
         .split("/")
         .filter(Boolean)
@@ -181,14 +196,11 @@ async function resolveWorkbookFileInfo(
         .join("/")
         .toLowerCase();
 
-      const scored = items
+      const scored = exactNameMatches
         .map((item) => {
           let score = 0;
-          const name = (item.name || "").toLowerCase();
           const parentPath = (item.parentReference?.path || "").toLowerCase();
-          if (name === fileName.toLowerCase()) score += 20;
           if (targetFolderPath && parentPath.includes(targetFolderPath)) score += 10;
-          if (name.endsWith(".xlsx")) score += 3;
           return { item, score };
         })
         .sort((a, b) => b.score - a.score);
@@ -354,6 +366,20 @@ const COLUMN_MAP: Record<string, keyof Job> = {
   'ACC wt': 'accWt',
 };
 
+const NORMALIZED_COLUMN_MAP = new Map<string, keyof Job>(
+  Object.entries(COLUMN_MAP).map(([header, column]) => [normalizeHeaderKey(header), column])
+);
+
+const COLUMN_ALIAS_MAP = new Map<string, keyof Job>([
+  [normalizeHeaderKey("External Document No"), "poNo"],
+  [normalizeHeaderKey("External Document No."), "poNo"],
+  [normalizeHeaderKey("External Document Number"), "poNo"],
+  [normalizeHeaderKey("External Doc No"), "poNo"],
+  [normalizeHeaderKey("External Doc Number"), "poNo"],
+  [normalizeHeaderKey("External PO No"), "poNo"],
+  [normalizeHeaderKey("External PO Number"), "poNo"],
+]);
+
 // Safe value extractors
 function safeString(value: unknown): string {
   if (value === null || value === undefined || value === '') return '';
@@ -444,7 +470,23 @@ function isNonDataJobToken(normalizedJobNo: string): boolean {
   return /^(job no|total|subtotal|grand total|nan|null|-|n\/a)$/i.test(normalizedJobNo);
 }
 
-function derivePoFromSheetName(sheetName: string): string {
+function normalizeHeaderKey(header: string): string {
+  return header
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function resolveColumnKey(header: string): keyof Job | undefined {
+  if (!header) return undefined;
+  const exactMatch = COLUMN_MAP[header];
+  if (exactMatch) return exactMatch;
+  const normalized = normalizeHeaderKey(header);
+  return COLUMN_ALIAS_MAP.get(normalized) ?? NORMALIZED_COLUMN_MAP.get(normalized);
+}
+
+export function derivePoFromSheetName(sheetName: string): string {
   const trimmed = sheetName.trim();
   if (/^samples$/i.test(trimmed)) {
     return "Samples";
@@ -457,6 +499,9 @@ function derivePoFromSheetName(sheetName: string): string {
   if (legacyMatch?.[1]) {
     return legacyMatch[1];
   }
+  if (/^C[A-Z0-9]+$/i.test(trimmed)) {
+    return trimmed.toUpperCase();
+  }
   return "";
 }
 
@@ -468,7 +513,7 @@ function derivePoFromJobNo(jobNo: string): string {
 }
 
 // Parse a worksheet's data into Job objects
-function parseWorksheetData(
+export function parseWorksheetData(
   values: unknown[][],
   sheetName: string,
   headerRowIndex: number
@@ -482,8 +527,9 @@ function parseWorksheetData(
   const colIndex: Record<string, number> = {};
   headers.forEach((header, idx) => {
     const headerStr = safeString(header);
-    if (headerStr && COLUMN_MAP[headerStr]) {
-      colIndex[COLUMN_MAP[headerStr]] = idx;
+    const columnKey = resolveColumnKey(headerStr);
+    if (columnKey) {
+      colIndex[columnKey] = idx;
     }
   });
 
@@ -505,10 +551,10 @@ function parseWorksheetData(
     if (!jobNo || isNonDataJobToken(normalizedJobNo)) continue;
 
     // Extract PO number
-    let poNo = safeString(row[colIndex['poNo']]).replace('.0', '');
+    let poNo = safeString(row[colIndex['poNo']]).replace(/\.0$/, "");
     if (!poNo) {
-      // Prefer job-derived PO for SO rows; then fallback to sheet name convention.
-      poNo = derivePoFromJobNo(jobNo) || derivePoFromSheetName(sheetName);
+      // Prefer explicit sheet conventions first, then SO-derived fallback.
+      poNo = derivePoFromSheetName(sheetName) || derivePoFromJobNo(jobNo);
     }
 
     const location = safeString(row[colIndex['location']]);

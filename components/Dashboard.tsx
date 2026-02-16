@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import type { Session } from "next-auth";
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type FormEvent } from "react";
 import {
   Job,
   LOCATION_ORDER,
@@ -34,6 +34,8 @@ interface PORisk {
 }
 
 const SHIPPED_PO_STORAGE_KEY = "location-dashboard-shipped-pos-v1";
+const LOCATION_OVERRIDE_STORAGE_KEY = "location-dashboard-location-overrides-v1";
+const LOCATION_OVERRIDE_TARGETS = LOCATION_ORDER.filter((location) => location !== "Other");
 
 const NUMERIC_SORT_COLUMNS: (keyof Job)[] = [
   "batchQty",
@@ -43,6 +45,33 @@ const NUMERIC_SORT_COLUMNS: (keyof Job)[] = [
   "weightPlating",
   "accWt",
 ];
+
+interface UnmappedLocationSummary {
+  rawLocation: string;
+  count: number;
+  pieces: number;
+}
+
+function normalizeLocationOverrideKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function resolveEffectiveLocation(
+  rawLocation: string,
+  normalizedLocation: string,
+  locationOverrides: Record<string, string>
+): string {
+  const overrideKey = normalizeLocationOverrideKey(rawLocation || "");
+  const overrideLocation = overrideKey ? locationOverrides[overrideKey] : "";
+  if (overrideLocation && LOCATION_ORDER.includes(overrideLocation)) {
+    return overrideLocation;
+  }
+  return normalizedLocation || "Other";
+}
+
+function isPackedLocation(normalizedLocation: string): boolean {
+  return normalizedLocation === "Packing";
+}
 
 function formatDueText(daysUntil: number): string {
   if (daysUntil < 0) return `${Math.abs(daysUntil)}d late`;
@@ -106,6 +135,9 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
   const [showQueryHelp, setShowQueryHelp] = useState(false);
   const [shippedPOs, setShippedPOs] = useState<Record<string, string>>({});
+  const [locationOverrides, setLocationOverrides] = useState<Record<string, string>>({});
+  const [overrideRawInput, setOverrideRawInput] = useState("");
+  const [overrideTargetInput, setOverrideTargetInput] = useState("");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -125,6 +157,30 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(SHIPPED_PO_STORAGE_KEY, JSON.stringify(shippedPOs));
   }, [shippedPOs]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(LOCATION_OVERRIDE_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, string>;
+      if (parsed && typeof parsed === "object") {
+        const sanitized = Object.fromEntries(
+          Object.entries(parsed).filter(([, mappedLocation]) =>
+            LOCATION_OVERRIDE_TARGETS.includes(mappedLocation)
+          )
+        );
+        setLocationOverrides(sanitized);
+      }
+    } catch {
+      // Ignore invalid local storage data.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(LOCATION_OVERRIDE_STORAGE_KEY, JSON.stringify(locationOverrides));
+  }, [locationOverrides]);
 
   const markPOAsShipped = useCallback((poNo: string) => {
     const normalized = poNo.trim();
@@ -175,6 +231,30 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     });
   }, [selectedPOs]);
 
+  const saveLocationOverride = useCallback((rawLocation: string, mappedLocation: string) => {
+    const normalizedRaw = normalizeLocationOverrideKey(rawLocation);
+    const normalizedTarget = mappedLocation.trim();
+    if (!normalizedRaw) return false;
+    if (!LOCATION_OVERRIDE_TARGETS.includes(normalizedTarget)) return false;
+
+    setLocationOverrides((prev) => ({
+      ...prev,
+      [normalizedRaw]: normalizedTarget,
+    }));
+    return true;
+  }, []);
+
+  const removeLocationOverride = useCallback((rawLocation: string) => {
+    const normalizedRaw = normalizeLocationOverrideKey(rawLocation);
+    if (!normalizedRaw) return;
+    setLocationOverrides((prev) => {
+      if (!prev[normalizedRaw]) return prev;
+      const next = { ...prev };
+      delete next[normalizedRaw];
+      return next;
+    });
+  }, []);
+
   // Fetch data
   const fetchData = useCallback(async (isManual = false) => {
     try {
@@ -216,19 +296,71 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     return () => clearInterval(interval);
   }, [autoRefreshEnabled, fetchData]);
 
+  const jobsWithOverrides = useMemo(() => {
+    return jobs.map((job) => ({
+      ...job,
+      normalizedLocation: resolveEffectiveLocation(job.location, job.normalizedLocation, locationOverrides),
+    }));
+  }, [jobs, locationOverrides]);
+
+  const isJobEffectivelyShipped = useCallback(
+    (job: Job): boolean => {
+      const manualOverride = Boolean(job.poNo && shippedPOs[job.poNo]);
+      return manualOverride || isPackedLocation(job.normalizedLocation);
+    },
+    [shippedPOs]
+  );
+
+  const poHasOpenJobs = useMemo(() => {
+    const openByPO = new Map<string, boolean>();
+    jobsWithOverrides.forEach((job) => {
+      if (!job.poNo) return;
+      if (!openByPO.has(job.poNo)) {
+        openByPO.set(job.poNo, false);
+      }
+      if (!isJobEffectivelyShipped(job)) {
+        openByPO.set(job.poNo, true);
+      }
+    });
+    return openByPO;
+  }, [jobsWithOverrides, isJobEffectivelyShipped]);
+
+  const unmappedLocations = useMemo(() => {
+    const grouped = new Map<string, UnmappedLocationSummary>();
+
+    jobs.forEach((job) => {
+      const rawLocation = (job.location || "").trim();
+      if (!rawLocation) return;
+      const effectiveLocation = resolveEffectiveLocation(job.location, job.normalizedLocation, locationOverrides);
+      if (effectiveLocation !== "Other") return;
+
+      const key = normalizeLocationOverrideKey(rawLocation);
+      const existing = grouped.get(key) ?? {
+        rawLocation,
+        count: 0,
+        pieces: 0,
+      };
+      existing.count += 1;
+      existing.pieces += job.batchQty || 0;
+      grouped.set(key, existing);
+    });
+
+    return Array.from(grouped.values()).sort((a, b) => b.count - a.count || a.rawLocation.localeCompare(b.rawLocation));
+  }, [jobs, locationOverrides]);
+
   // Computed values
-  const uniquePOs = useMemo(() => [...new Set(jobs.map(j => j.poNo).filter(Boolean))].sort(), [jobs]);
-  const uniqueSKUs = useMemo(() => [...new Set(jobs.map(j => j.sku).filter(Boolean))].sort(), [jobs]);
+  const uniquePOs = useMemo(() => [...new Set(jobsWithOverrides.map(j => j.poNo).filter(Boolean))].sort(), [jobsWithOverrides]);
+  const uniqueSKUs = useMemo(() => [...new Set(jobsWithOverrides.map(j => j.sku).filter(Boolean))].sort(), [jobsWithOverrides]);
   const shippedPOList = useMemo(() => Object.keys(shippedPOs).sort(), [shippedPOs]);
 
   // Get delivery date for selected POs
   const selectedPOsDeliveryDate = useMemo(() => {
     if (selectedPOs.length === 0) return null;
-    const activeSelectedPOs = selectedPOs.filter((po) => !shippedPOs[po]);
-    if (activeSelectedPOs.length === 0) return null;
     const dates = new Set<string>();
-    jobs.forEach(j => {
-      if (activeSelectedPOs.includes(j.poNo) && j.deliveryDate) {
+    jobsWithOverrides.forEach(j => {
+      if (!selectedPOs.includes(j.poNo)) return;
+      if (isJobEffectivelyShipped(j)) return;
+      if (j.deliveryDate) {
         dates.add(j.deliveryDate);
       }
     });
@@ -241,7 +373,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
       return daysA - daysB;
     });
     return sortedDates[0];
-  }, [jobs, selectedPOs, shippedPOs]);
+  }, [jobsWithOverrides, selectedPOs, isJobEffectivelyShipped]);
 
   const selectedPOsDeliveryRisk = useMemo(() => {
     if (!selectedPOsDeliveryDate) return null;
@@ -263,8 +395,8 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
       }
     >();
 
-    jobs.forEach((job) => {
-      if (!job.poNo || shippedPOs[job.poNo]) return;
+    jobsWithOverrides.forEach((job) => {
+      if (!job.poNo || isJobEffectivelyShipped(job)) return;
       const current = grouped.get(job.poNo) ?? {
         earliestDate: null,
         earliestDays: Number.POSITIVE_INFINITY,
@@ -313,7 +445,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
       if (priorityDiff !== 0) return priorityDiff;
       return a.daysUntil - b.daysUntil;
     });
-  }, [jobs, shippedPOs]);
+  }, [jobsWithOverrides, isJobEffectivelyShipped]);
 
   const deliverySummary = useMemo(() => {
     return {
@@ -331,7 +463,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
 
   // Filtered and sorted data (multi-select filters)
   const filteredJobs = useMemo(() => {
-    let result = [...jobs];
+    let result = [...jobsWithOverrides];
 
     // PO filter (multi - OR logic)
     if (selectedPOs.length > 0) {
@@ -351,7 +483,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     // Urgency filter (multi - OR logic)
     if (selectedUrgencies.length > 0) {
       result = result.filter(j => {
-        const isShipped = Boolean(j.poNo && shippedPOs[j.poNo]);
+        const isShipped = isJobEffectivelyShipped(j);
         const daysUntil = isShipped ? Number.POSITIVE_INFINITY : getDaysUntilDelivery(j.deliveryDate);
         const bucket = isShipped ? "normal" : getAgeBucket(daysUntil);
         return selectedUrgencies.includes(bucket);
@@ -387,7 +519,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     }
 
     return result;
-  }, [jobs, selectedPOs, selectedSKUs, selectedLocations, selectedUrgencies, searchQuery, sortColumn, sortDirection, shippedPOs]);
+  }, [jobsWithOverrides, selectedPOs, selectedSKUs, selectedLocations, selectedUrgencies, searchQuery, sortColumn, sortDirection, isJobEffectivelyShipped]);
 
   const scopedPORisks = useMemo(() => {
     const visiblePOs = new Set(filteredJobs.map((job) => job.poNo));
@@ -430,6 +562,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
     setSearchQuery("");
   };
 
+  const handleLocationOverrideSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const didSave = saveLocationOverride(overrideRawInput, overrideTargetInput);
+    if (!didSave) return;
+    setOverrideRawInput("");
+    setOverrideTargetInput("");
+  };
+
   // Toggle table row selection
   const toggleJobSelection = (jobNo: string) => {
     setSelectedJobIds(prev =>
@@ -451,7 +591,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   // Query assistant
   const runQuery = (query: string) => {
     setQueryInput(query);
-    const result = processQuery(query, jobs);
+    const result = processQuery(query, jobsWithOverrides);
     setQueryResult(result);
   };
 
@@ -475,12 +615,17 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   // PO Analytics (for modal)
   const poJobs = useMemo(() => {
     if (!selectedPOModal) return [];
-    return jobs.filter(j => j.poNo === selectedPOModal);
-  }, [jobs, selectedPOModal]);
-  const selectedPOModalIsShipped = useMemo(
+    return jobsWithOverrides.filter(j => j.poNo === selectedPOModal);
+  }, [jobsWithOverrides, selectedPOModal]);
+  const selectedPOModalManualOverride = useMemo(
     () => Boolean(selectedPOModal && shippedPOs[selectedPOModal]),
     [selectedPOModal, shippedPOs]
   );
+  const selectedPOModalHasOpenJobs = useMemo(() => {
+    if (!selectedPOModal) return false;
+    return poHasOpenJobs.get(selectedPOModal) === true;
+  }, [selectedPOModal, poHasOpenJobs]);
+  const selectedPOModalIsShipped = selectedPOModalManualOverride || !selectedPOModalHasOpenJobs;
 
   const poStats = useMemo(() => {
     if (!poJobs.length) return null;
@@ -543,10 +688,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
   // PO options for multi-select
   const poOptions = uniquePOs.map((po) => ({
     value: po,
-    label: shippedPOs[po] ? `PO ${po} (Shipped)` : `PO ${po}`,
+    label: shippedPOs[po]
+      ? `PO ${po} (Shipped override)`
+      : poHasOpenJobs.get(po) === false
+        ? `PO ${po} (Packed/Shipped)`
+        : `PO ${po}`,
   }));
-  const selectedPOsAllShipped = selectedPOs.length > 0 && selectedPOs.every((po) => Boolean(shippedPOs[po]));
-  const selectedPOsAnyShipped = selectedPOs.some((po) => Boolean(shippedPOs[po]));
+  const selectedPOsAllShipped = selectedPOs.length > 0 && selectedPOs.every((po) => poHasOpenJobs.get(po) === false);
+  const selectedPOsAnyManualShipped = selectedPOs.some((po) => Boolean(shippedPOs[po]));
 
   return (
     <div className="app-container">
@@ -581,7 +730,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
             {selectedPOsAllShipped && (
               <div className="delivery-date-display delivery-status-normal">
                 <span className="delivery-label">Status:</span>
-                <span className="delivery-value">Shipped override active</span>
+                <span className="delivery-value">Packed/Shipped (no open jobs)</span>
               </div>
             )}
             {selectedPOs.length > 0 && selectedPOsDeliveryDate && (
@@ -606,7 +755,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                     Ship selected
                   </button>
                 )}
-                {selectedPOsAnyShipped && (
+                {selectedPOsAnyManualShipped && (
                   <button
                     type="button"
                     className="po-bulk-ship-btn undo"
@@ -765,6 +914,82 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
         />
       </section>
 
+      <section className="location-mapping-section">
+        <div className="location-mapping-header">
+          <h2>Location Mapping Fixer</h2>
+          <span>
+            {unmappedLocations.length} unmapped raw location{unmappedLocations.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <form className="location-mapping-form" onSubmit={handleLocationOverrideSubmit}>
+          <input
+            type="text"
+            className="mapping-input"
+            placeholder="Raw location text (e.g. stone setter)"
+            value={overrideRawInput}
+            onChange={(event) => setOverrideRawInput(event.target.value)}
+          />
+          <input
+            type="text"
+            className="mapping-input"
+            list="location-mapping-targets"
+            placeholder="Map to (e.g. Hand Setting)"
+            value={overrideTargetInput}
+            onChange={(event) => setOverrideTargetInput(event.target.value)}
+          />
+          <datalist id="location-mapping-targets">
+            {LOCATION_OVERRIDE_TARGETS.map((location) => (
+              <option key={location} value={location} />
+            ))}
+          </datalist>
+          <button
+            type="submit"
+            className="mapping-save-btn"
+            disabled={
+              !overrideRawInput.trim() ||
+              !LOCATION_OVERRIDE_TARGETS.includes(overrideTargetInput.trim())
+            }
+          >
+            Save Mapping
+          </button>
+        </form>
+        {unmappedLocations.length > 0 && (
+          <div className="unmapped-location-list">
+            {unmappedLocations.slice(0, 8).map((entry) => (
+              <div key={entry.rawLocation} className="unmapped-location-item">
+                <div className="unmapped-location-text">{entry.rawLocation}</div>
+                <div className="unmapped-location-meta">
+                  {entry.count} jobs | {entry.pieces.toLocaleString()} pcs
+                </div>
+                <button
+                  type="button"
+                  className="mapping-use-btn"
+                  onClick={() => setOverrideRawInput(entry.rawLocation)}
+                >
+                  Use in form
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {Object.keys(locationOverrides).length > 0 && (
+          <div className="active-mappings-list">
+            {Object.entries(locationOverrides).map(([rawLocation, mappedLocation]) => (
+              <div key={rawLocation} className="active-mapping-item">
+                <span>{rawLocation} → {mappedLocation}</span>
+                <button
+                  type="button"
+                  className="mapping-remove-btn"
+                  onClick={() => removeLocationOverride(rawLocation)}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
       {/* Analytics Panel */}
       <section className="analytics-section">
         <AnalyticsPanel
@@ -861,7 +1086,9 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                     .filter(j => j.normalizedLocation === loc)
                     .map(job => (
                       (() => {
-                        const isShipped = Boolean(job.poNo && shippedPOs[job.poNo]);
+                        const manualShippedOverride = Boolean(job.poNo && shippedPOs[job.poNo]);
+                        const autoShippedByPacking = !manualShippedOverride && isPackedLocation(job.normalizedLocation);
+                        const isShipped = manualShippedOverride || autoShippedByPacking;
                         const hasDate = !isShipped && Boolean(job.deliveryDate);
                         const daysUntil = hasDate ? getDaysUntilDelivery(job.deliveryDate) : Number.POSITIVE_INFINITY;
                         const bucket: PORiskBucket = isShipped ? "normal" : hasDate ? getAgeBucket(daysUntil) : "missing";
@@ -882,10 +1109,15 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                             {job.poNo}
                           </span>
                         </div>
+                        {job.normalizedLocation === "Other" && job.location && (
+                          <div className="kanban-card-raw-location">Raw: {job.location}</div>
+                        )}
                         <div className="kanban-card-delivery">
                           <span className={`delivery-pill delivery-${bucket}`}>
-                            {isShipped
+                            {manualShippedOverride
                               ? "Shipped override"
+                              : autoShippedByPacking
+                                ? "Packed (assumed shipped)"
                               : hasDate
                                 ? `${job.deliveryDate} • ${formatDueText(daysUntil)}`
                                 : "No delivery date"}
@@ -947,7 +1179,9 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
               </thead>
               <tbody>
                 {filteredJobs.map(job => {
-                  const isShipped = Boolean(job.poNo && shippedPOs[job.poNo]);
+                  const manualShippedOverride = Boolean(job.poNo && shippedPOs[job.poNo]);
+                  const autoShippedByPacking = !manualShippedOverride && isPackedLocation(job.normalizedLocation);
+                  const isShipped = manualShippedOverride || autoShippedByPacking;
                   const hasDate = !isShipped && Boolean(job.deliveryDate);
                   const daysUntil = hasDate ? getDaysUntilDelivery(job.deliveryDate) : Number.POSITIVE_INFINITY;
                   const bucket: PORiskBucket = isShipped ? "normal" : hasDate ? getAgeBucket(daysUntil) : "missing";
@@ -982,12 +1216,21 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                       <span className="location-badge" data-location={job.normalizedLocation}>
                         {job.normalizedLocation}
                       </span>
+                      {job.normalizedLocation === "Other" && job.location && (
+                        <div className="table-raw-location">Raw: {job.location}</div>
+                      )}
                     </td>
                     <td>
                       <div className="delivery-cell">
                         <span>{job.deliveryDate || "—"}</span>
                         <span className={`delivery-pill delivery-${bucket}`}>
-                          {isShipped ? "Shipped override" : hasDate ? formatDueText(daysUntil) : "No date"}
+                          {manualShippedOverride
+                            ? "Shipped override"
+                            : autoShippedByPacking
+                              ? "Packed (assumed shipped)"
+                              : hasDate
+                                ? formatDueText(daysUntil)
+                                : "No date"}
                         </span>
                       </div>
                     </td>
@@ -1000,7 +1243,7 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
         )}
 
         <div className="table-footer">
-          <span>Showing {filteredJobs.length} of {jobs.length}</span>
+          <span>Showing {filteredJobs.length} of {jobsWithOverrides.length}</span>
         </div>
       </section>
 
@@ -1052,6 +1295,12 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                     </span>
                   </span>
                 </div>
+                {selectedJob.location && (
+                  <div className="detail-item">
+                    <span className="detail-label">Raw Location</span>
+                    <span className="detail-value">{selectedJob.location}</span>
+                  </div>
+                )}
                 <div className="detail-item">
                   <span className="detail-label">Delivery Date</span>
                   <span className="detail-value">{selectedJob.deliveryDate || "—"}</span>
@@ -1093,10 +1342,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
             <div className="modal-header">
               <h2>
                 PO {selectedPOModal} Analytics
-                {selectedPOModalIsShipped && <span className="po-shipped-badge">Shipped</span>}
+                {selectedPOModalIsShipped && (
+                  <span className="po-shipped-badge">
+                    {selectedPOModalManualOverride ? "Shipped (Override)" : "Shipped (Packing)"}
+                  </span>
+                )}
               </h2>
               <div className="po-modal-actions">
-                {selectedPOModalIsShipped ? (
+                {selectedPOModalManualOverride ? (
                   <button
                     type="button"
                     className="po-ship-toggle-btn is-shipped"
@@ -1104,6 +1357,8 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
                   >
                     Undo Shipped
                   </button>
+                ) : selectedPOModalIsShipped ? (
+                  <span className="po-shipped-note">Auto-shipped from Packing location</span>
                 ) : (
                   <button
                     type="button"
@@ -1119,9 +1374,14 @@ export default function Dashboard({ user, onSignOut }: DashboardProps) {
               </div>
             </div>
             <div className="modal-content">
-              {poStats.shippedOverride && (
+              {selectedPOModalManualOverride && (
                 <div className="po-shipped-note">
                   Shipped override is active. This PO is excluded from delivery risk alerts.
+                </div>
+              )}
+              {!selectedPOModalManualOverride && selectedPOModalIsShipped && (
+                <div className="po-shipped-note">
+                  All rows are at Packing, so this PO is treated as shipped for delivery-risk alerts.
                 </div>
               )}
               {/* Summary Stats */}

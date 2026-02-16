@@ -15,6 +15,8 @@ For each worksheet in the workbook:
 3. Apply built-in business rule:
    - Always include `Samples`
    - Include PO tabs that match `EXCEL_PO_SHEET_REGEX` (default: `CUSTOMER-PO`, e.g. `C0640-40413`, `C0553F-VPO12`)
+   - Include `CUSTOMER-PO (suffix)` migration tabs (e.g. `C0640-40413 (P)`)
+   - Include customer tabs that match `CUSTOMER` (e.g. `C0553F`)
    - Optionally include legacy PO tabs (`40413`, `40413 (P)`) when `EXCEL_ALLOW_LEGACY_PO_SHEETS=true`
 4. Skip obvious non-data names (e.g. summary, dashboard, template, archive) when they are not explicitly included.
 5. Validate required headers:
@@ -23,6 +25,17 @@ For each worksheet in the workbook:
    - Must include at least one of `Batch Qty` or `Total Qty`
 6. Parse rows and keep the sheet only if at least one valid job row exists:
    - `Job No` starts with `SO`
+
+## PO Assignment Rules
+
+When parsing each row, PO is assigned in this order:
+
+1. `PO No` column value (or `External Document No` / `External Document Number` aliases)
+2. Sheet-derived PO rule:
+   - `C0640-40413` -> `40413`
+   - `Samples` -> `Samples`
+   - `C0553F` -> `C0553F` (customer-level fallback)
+3. `SOxxxxx` job-number fallback (last resort)
 
 ## Why This Is More Robust
 

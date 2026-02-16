@@ -20,6 +20,18 @@ test("includes alpha-numeric PO part for future customers", () => {
   assert.equal(result.shouldProcess, true);
 });
 
+test("includes customer-only sheet names", () => {
+  const config = getWorksheetSelectionConfigFromEnv({});
+  const result = decideWorksheetByName("C0553F", config);
+  assert.equal(result.shouldProcess, true);
+});
+
+test("includes customer-po tabs with legacy suffix markers", () => {
+  const config = getWorksheetSelectionConfigFromEnv({});
+  const result = decideWorksheetByName("C0640-40413 (P)", config);
+  assert.equal(result.shouldProcess, true);
+});
+
 test("always includes Samples tab", () => {
   const config = getWorksheetSelectionConfigFromEnv({});
   const result = decideWorksheetByName("Samples", config);
