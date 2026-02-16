@@ -31,3 +31,18 @@ test("falls back to customer code when PO columns are missing", () => {
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].poNo, "C0553F");
 });
+
+test("uses Graph display text for delivery date when available", () => {
+  const values = [
+    ["Job No", "PO No", "Location", "Batch Qty", "Delivery Date"],
+    ["SO77777-001-J1", "VPO8", "Wax", 10, 46000],
+  ];
+  const displayValues = [
+    ["Job No", "PO No", "Location", "Batch Qty", "Delivery Date"],
+    ["SO77777-001-J1", "VPO8", "Wax", "10", "12/3/2026"],
+  ];
+
+  const jobs = parseWorksheetData(values, "C0553F", 0, displayValues);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].deliveryDate, "12/3/2026");
+});

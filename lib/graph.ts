@@ -51,6 +51,7 @@ interface GraphSession {
 
 interface GraphRangeResponse {
   values?: unknown[][];
+  text?: unknown[][];
 }
 
 interface GraphDriveItemsResponse {
@@ -516,7 +517,8 @@ function derivePoFromJobNo(jobNo: string): string {
 export function parseWorksheetData(
   values: unknown[][],
   sheetName: string,
-  headerRowIndex: number
+  headerRowIndex: number,
+  displayValues?: unknown[][]
 ): Job[] {
   if (!values || values.length <= headerRowIndex + 1) return [];
 
@@ -542,6 +544,7 @@ export function parseWorksheetData(
   for (let i = headerRowIndex + 1; i < values.length; i++) {
     const row = values[i];
     if (!Array.isArray(row)) continue;
+    const displayRow = Array.isArray(displayValues?.[i]) ? displayValues?.[i] : undefined;
 
     // Get job number
     const jobNo = safeString(row[colIndex['jobNo']]);
@@ -582,7 +585,9 @@ export function parseWorksheetData(
       size: safeString(row[colIndex['size']]),
       location,
       normalizedLocation: normalizeLocation(location),
-      deliveryDate: formatDateDMY(row[colIndex['deliveryDate']]),
+      deliveryDate: formatDateDMY(
+        displayRow?.[colIndex['deliveryDate']] ?? row[colIndex['deliveryDate']]
+      ),
       notesPre,
       notesNew,
       dateSending: formatDate(row[colIndex['dateSending']]),
@@ -744,6 +749,7 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
           .get() as GraphRangeResponse;
 
         const values = Array.isArray(rangeResponse.values) ? rangeResponse.values : [];
+        const displayValues = Array.isArray(rangeResponse.text) ? rangeResponse.text : undefined;
         const headerRowIndex = findHeaderRowIndex(values);
         const headers = headerRowIndex >= 0 ? getSheetHeaderSet([values[headerRowIndex]]) : new Set<string>();
 
@@ -755,7 +761,7 @@ export async function fetchLocationJournalData(accessToken: string): Promise<Job
           continue;
         }
 
-        const jobs = parseWorksheetData(values, sheetName, headerRowIndex);
+        const jobs = parseWorksheetData(values, sheetName, headerRowIndex, displayValues);
         if (jobs.length === 0) {
           skippedSheets.push(`${sheetName} (no valid SO job rows after parsing)`);
           continue;
